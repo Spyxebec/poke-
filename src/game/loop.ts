@@ -94,6 +94,14 @@ useGameStore.subscribe((state, prevState) => {
   }
 })
 
+declare global {
+  interface Window {
+    __lastFrameMs?: number
+  }
+}
+
+let measurementFrameCount = 0
+
 /**
  * Game loop step for gesture detection, projectile impacts, move effects, and cooldowns.
  *
@@ -114,12 +122,14 @@ export function gameLoop(
   players: PlayerLike[],
   timestampMs: number = performance.now()
 ): void {
-  const store = useGameStore.getState()
+  const frameStart = performance.now()
+  try {
+    const store = useGameStore.getState()
 
-  // STEP D: Loop guard — only run game logic during BATTLE
-  if (store.phase !== 'BATTLE') {
-    return
-  }
+    // STEP D: Loop guard — only run game logic during BATTLE
+    if (store.phase !== 'BATTLE') {
+      return
+    }
 
   const now = Date.now()
 
@@ -354,6 +364,13 @@ export function gameLoop(
         tracker.gestureStartedAt = null
         tracker.hasFired = false
       }
+    }
+  }
+  } finally {
+    window.__lastFrameMs = performance.now() - frameStart
+    measurementFrameCount++
+    if (measurementFrameCount % 120 === 0) {
+      console.log('frame time:', window.__lastFrameMs.toFixed(1), 'ms')
     }
   }
 }

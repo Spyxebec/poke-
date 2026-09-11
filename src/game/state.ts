@@ -20,6 +20,7 @@ export interface Move {
 export interface Player {
   id: 1 | 2
   hp: number // starts at 100, max 100
+  stamina: number // starts at 100, max 100
   cooldownUntil: number
   blockUntil: number
   lastGesture: MoveId | null
@@ -94,6 +95,7 @@ export type GameStore = GameState & GameActions
 const createInitialPlayer = (id: 1 | 2): Player => ({
   id,
   hp: 100,
+  stamina: 100,
   cooldownUntil: 0,
   blockUntil: 0,
   lastGesture: null,

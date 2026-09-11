@@ -20,6 +20,24 @@ export function resetSmoothedBarPos(): void {
   smoothedBarPos[2] = null
 }
 
+// Module-level variables for smoothed bar values (STEP D: anti-snap)
+const displayHp: Record<1 | 2, number> = {
+  1: 100,
+  2: 100,
+}
+
+const displayStamina: Record<1 | 2, number> = {
+  1: 100,
+  2: 100,
+}
+
+export function resetDisplayBars(): void {
+  displayHp[1] = 100
+  displayHp[2] = 100
+  displayStamina[1] = 100
+  displayStamina[2] = 100
+}
+
 let lastConfettiTime = 0
 
 // Pre-computed string lookups
@@ -50,25 +68,7 @@ export const MOVE_FLASH_TEXT: Record<1 | 2, Record<MoveId, string>> = {
   },
 }
 
-// Pre-computed HP text strings to avoid string concatenation per frame
-const HP_TEXT_CACHE: string[] = Array.from({ length: 101 }, (_, i) => `${i}/100`)
-function getHpText(hp: number): string {
-  const rounded = Math.max(0, Math.min(100, Math.round(hp)))
-  return HP_TEXT_CACHE[rounded] ?? `${rounded}/100`
-}
 
-// Pre-render the HP bar rounded-rect path with Path2D, reuse per draw
-let cachedBarWidth = 0
-let cachedBarPath: Path2D | null = null
-
-function getBarPath(width: number): Path2D {
-  if (!cachedBarPath || cachedBarWidth !== width) {
-    cachedBarPath = new Path2D()
-    cachedBarPath.roundRect(0, 0, width, 12, 4)
-    cachedBarWidth = width
-  }
-  return cachedBarPath
-}
 
 // Pre-allocated arrays and configs to avoid allocations in render loop
 const DASH_8_8 = [8, 8]
@@ -245,17 +245,19 @@ export function renderCanvas({
   ctx.restore()
 
   // ──────────────────────────────────────────
-  // 2. HP bars (smoothed, anti-jitter, unmirrored coords)
+  // 2. HP & Stamina bars (STEP B, C, D)
   // ──────────────────────────────────────────
   const storePlayers = useGameStore.getState().players
-  const barWidth = 0.15 * vw
-  const barPath = getBarPath(barWidth)
+  const barWidth = 0.18 * canvas.width
+  const barHeight = 10
 
   for (let pi = 0; pi < players.length; pi++) {
     const player = players[pi]
     if (!player || !player.landmarks || player.landmarks.length < 33) continue
-    const lm11 = player.landmarks[11]
-    const lm12 = player.landmarks[12]
+    const lm = player.landmarks
+    if (!lm) continue
+    const lm11 = lm[11]
+    const lm12 = lm[12]
     if (!lm11 || !lm12) continue
 
     const id = player.playerId
@@ -277,63 +279,120 @@ export function renderCanvas({
     }
 
     // Convert from mirrored normalized space to screen pixels
-    const screenX = (1 - smoothed.x) * vw
-    const screenY = smoothed.y * vh
+    const screenX = (1 - smoothed.x) * canvas.width
+    const screenY = smoothed.y * canvas.height
 
     const barLeft = screenX - barWidth * 0.5
-    const barTop = screenY - 6 // 12 / 2
+    const barTop = screenY - barHeight * 0.5
 
     const storePlayer = storePlayers[id - 1]
-    const hp = storePlayer ? storePlayer.hp : 100
+    const targetHp = storePlayer ? storePlayer.hp : 100
+    const targetStamina = storePlayer ? (storePlayer.stamina ?? 100) : 100
 
-    // Fill color based on HP thresholds
-    let fillColor = '#22c55e'
-    if (hp <= 20) {
-      fillColor = '#ef4444'
-    } else if (hp <= 50) {
-      fillColor = '#eab308'
+    // STEP D: Smooth bar fill (anti-snap)
+    displayHp[id] += (targetHp - displayHp[id]) * 0.15
+    displayStamina[id] += (targetStamina - displayStamina[id]) * 0.15
+
+    const currentHp = displayHp[id]
+    const currentStamina = displayStamina[id]
+
+    // ── STEP B: HP Bar ──
+    // Gradient fill:
+    //   hp > 50:  '#16a34a' -> '#22c55e'
+    //   hp > 20:  '#ca8a04' -> '#eab308'
+    //   hp <= 20: '#dc2626' -> '#ef4444'
+    let colorStart = '#16a34a'
+    let colorEnd = '#22c55e'
+    if (currentHp <= 20) {
+      colorStart = '#dc2626'
+      colorEnd = '#ef4444'
+    } else if (currentHp <= 50) {
+      colorStart = '#ca8a04'
+      colorEnd = '#eab308'
     }
 
-    // Translate to bar position (reused Path2D)
-    ctx.translate(barLeft, barTop)
-
-    // Bar background (black with transparency)
+    // Drop shadow: ctx.shadowColor rgba(0,0,0,0.6), blur 4
+    ctx.save()
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)'
+    ctx.shadowBlur = 4
     ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
-    ctx.fill(barPath)
+    ctx.beginPath()
+    ctx.roundRect(barLeft, barTop, barWidth, barHeight, 5)
+    ctx.fill()
+    ctx.restore()
 
-    // HP fill width
-    const fillWidth = barWidth * Math.max(0, Math.min(100, hp) * 0.01)
-    if (fillWidth > 0) {
-      ctx.fillStyle = fillColor
+    // HP Bar gradient fill
+    const hpFillWidth = barWidth * Math.max(0, Math.min(100, currentHp) * 0.01)
+    if (hpFillWidth > 0) {
+      ctx.save()
       ctx.beginPath()
-      ctx.roundRect(0, 0, fillWidth, 12, 4)
-      ctx.fill()
+      ctx.roundRect(barLeft, barTop, barWidth, barHeight, 5)
+      ctx.clip()
+
+      const hpGrad = ctx.createLinearGradient(barLeft, 0, barLeft + barWidth, 0)
+      hpGrad.addColorStop(0, colorStart)
+      hpGrad.addColorStop(1, colorEnd)
+      ctx.fillStyle = hpGrad
+      ctx.fillRect(barLeft, barTop, hpFillWidth, barHeight)
+      ctx.restore()
     }
 
-    // 2px black border
+    // Border: 2px black outer, 1px rgba(255,255,255,0.3) inner
     ctx.strokeStyle = '#000000'
     ctx.lineWidth = 2
-    ctx.stroke(barPath)
+    ctx.beginPath()
+    ctx.roundRect(barLeft, barTop, barWidth, barHeight, 5)
+    ctx.stroke()
 
-    ctx.translate(-barLeft, -barTop)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(barLeft + 1, barTop + 1, Math.max(0, barWidth - 2), barHeight - 2, 4)
+    ctx.stroke()
 
-    // Label to the LEFT of the bar: cached "P1" / "P2"
+    // Label "P1" or "P2" to the LEFT, bold 18px, white with 3px black stroke
     const label = PLAYER_NAMES[id]
-    ctx.font = 'bold 15px system-ui, sans-serif'
+    ctx.font = 'bold 18px system-ui, sans-serif'
     ctx.strokeStyle = '#000000'
     ctx.lineWidth = 3
     ctx.strokeText(label, barLeft - 18, screenY)
     ctx.fillStyle = '#ffffff'
     ctx.fillText(label, barLeft - 18, screenY)
 
-    // HP number to the right of the bar: cached "72/100"
-    const hpText = getHpText(hp)
-    ctx.font = 'bold 12px monospace'
+    // ── STEP C: Stamina Bar below HP Bar ──
+    // Same anchor as HP bar, offset DOWN by (barHeight + 4px gap)
+    const staminaBarTop = barTop + barHeight + 4
+    const staminaBarHeight = 6
+    const staminaFillWidth =
+      barWidth * Math.max(0, Math.min(100, currentStamina) * 0.01)
+
+    // Stamina bar background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
+    ctx.beginPath()
+    ctx.roundRect(barLeft, staminaBarTop, barWidth, staminaBarHeight, 3)
+    ctx.fill()
+
+    // Fill: linear gradient '#0ea5e9' -> '#38bdf8'
+    if (staminaFillWidth > 0) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.roundRect(barLeft, staminaBarTop, barWidth, staminaBarHeight, 3)
+      ctx.clip()
+
+      const staminaGrad = ctx.createLinearGradient(barLeft, 0, barLeft + barWidth, 0)
+      staminaGrad.addColorStop(0, '#0ea5e9')
+      staminaGrad.addColorStop(1, '#38bdf8')
+      ctx.fillStyle = staminaGrad
+      ctx.fillRect(barLeft, staminaBarTop, staminaFillWidth, staminaBarHeight)
+      ctx.restore()
+    }
+
+    // Border: 1px black
     ctx.strokeStyle = '#000000'
-    ctx.lineWidth = 3
-    ctx.strokeText(hpText, barLeft + barWidth + 30, screenY)
-    ctx.fillStyle = '#ffffff'
-    ctx.fillText(hpText, barLeft + barWidth + 30, screenY)
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(barLeft, staminaBarTop, barWidth, staminaBarHeight, 3)
+    ctx.stroke()
   }
 
   // ──────────────────────────────────────────

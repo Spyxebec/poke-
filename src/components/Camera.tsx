@@ -1,13 +1,15 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useCamera } from '../hooks/useCamera'
-import { usePose } from '../hooks/usePose'
+import { usePose, type PoseResult } from '../hooks/usePose'
 import { usePlayerAssignment } from '../hooks/usePlayerAssignment'
 import { Overlay } from './Overlay'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
-import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { gameLoop, lastFireAt } from '../game/loop'
 import { useGameStore } from '../game/state'
 
+// Module-level state for async detection (STEP 1)
+let latestResult: PoseResult | null = null
+let detectionInFlight = false
 
 /**
  * Fullscreen mirrored camera feed with pose skeleton overlay
@@ -21,14 +23,8 @@ export function Camera() {
   const rafIdRef = useRef<number>(0)
   const [videoReady, setVideoReady] = useState(false)
   const [players, setPlayers] = useState<PlayerAssignment[]>([])
-
-  // Throttling state stored in refs
-  const frameCountRef = useRef<number>(0)
-  const lastResultRef = useRef<NormalizedLandmark[][] | null>(null)
-  const lastDetectionAt = useRef<number>(0)
-  const lastDetectMsRef = useRef<number>(0)
-  const skippedCountRef = useRef<number>(0)
   const latestPlayersRef = useRef<PlayerAssignment[]>([])
+  const lastProcessedResultRef = useRef<PoseResult | null>(null)
 
   // Start the detection loop once both camera and model are ready
   const startLoop = useCallback(() => {
@@ -53,38 +49,26 @@ export function Camera() {
           return
         }
 
-        const frameCount = frameCountRef.current++
-
-        if (frameCount % 2 === 0) {
-          // EVEN frames: run detectForVideo
-          const startDetect = performance.now()
-          const rawPoses = detectForVideo(vid, now)
-          lastDetectMsRef.current = performance.now() - startDetect
-
-          if (rawPoses !== undefined) {
-            lastResultRef.current = rawPoses
-            lastDetectionAt.current = now
-            latestPlayersRef.current = assign(rawPoses)
-          }
-        } else {
-          // ODD frames: reuse previous pose result unchanged
-          skippedCountRef.current++
+        if (!detectionInFlight) {
+          detectionInFlight = true
+          detectForVideo(vid, performance.now())
+            .then((res) => {
+              latestResult = res ?? null
+              detectionInFlight = false
+            })
+            .catch(() => {
+              detectionInFlight = false
+            })
         }
 
-        // Log once every 60 frames: "detect: Xms, skipped: N"
-        if (frameCount > 0 && frameCount % 60 === 0) {
-          console.log(
-            `detect: ${Math.round(lastDetectMsRef.current)}ms, skipped: ${skippedCountRef.current}`
-          )
-          skippedCountRef.current = 0
+        if (latestResult !== lastProcessedResultRef.current) {
+          lastProcessedResultRef.current = latestResult
+          latestPlayersRef.current = latestResult ? assign(latestResult) : []
         }
 
-        // For RENDERING and GESTURE DETECTION, use the last result regardless
-        // of whether it was fresh this frame. Do NOT interpolate.
-        if (latestPlayersRef.current.length > 0) {
-          gameLoop(latestPlayersRef.current, now)
-          setPlayers([...latestPlayersRef.current])
-        }
+        // ALWAYS render with latestResult (even if null)
+        gameLoop(latestPlayersRef.current, now)
+        setPlayers([...latestPlayersRef.current])
       }
 
       rafIdRef.current = requestAnimationFrame(loop)
@@ -110,7 +94,7 @@ export function Camera() {
     function onPlaying() {
       setVideoReady(true)
       if (video.videoWidth && video.videoHeight) {
-        console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+        console.log(`[camera] ${video.videoWidth}x${video.videoHeight}`)
       }
     }
 
@@ -118,7 +102,7 @@ export function Camera() {
     if (!video.paused && video.readyState >= 2) {
       setVideoReady(true)
       if (video.videoWidth && video.videoHeight) {
-        console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+        console.log(`[camera] ${video.videoWidth}x${video.videoHeight}`)
       }
     }
 

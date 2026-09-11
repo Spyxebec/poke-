@@ -28,28 +28,47 @@ export function useCamera(): UseCameraResult {
       setError(null)
 
       try {
+        let chosenResolution = '1920x1080'
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: 'user',
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              frameRate: { ideal: 30, max: 60 },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 },
             },
             audio: false,
           })
-        } catch (primaryErr) {
-          console.warn('[useCamera] 1280x720 failed, retrying with 640x480 fallback:', primaryErr)
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: 'user',
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              frameRate: { ideal: 30, max: 60 },
-            },
-            audio: false,
-          })
+          chosenResolution = '1920x1080'
+        } catch (err1080) {
+          console.warn('[useCamera] 1920x1080 failed, retrying with 1280x720 fallback:', err1080)
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: 'user',
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 },
+              },
+              audio: false,
+            })
+            chosenResolution = '1280x720'
+          } catch (err720) {
+            console.warn('[useCamera] 1280x720 failed, retrying with 640x480 fallback:', err720)
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                facingMode: 'user',
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 30 },
+              },
+              audio: false,
+            })
+            chosenResolution = '640x480'
+          }
         }
+
+        console.log(`[camera] ${chosenResolution}`)
 
         if (videoRef.current) {
           const video = videoRef.current
@@ -59,7 +78,7 @@ export function useCamera(): UseCameraResult {
 
           const logDimensions = () => {
             if (video.videoWidth && video.videoHeight) {
-              console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+              console.log(`[camera] ${video.videoWidth}x${video.videoHeight}`)
             }
           }
 
