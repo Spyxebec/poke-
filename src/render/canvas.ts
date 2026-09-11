@@ -1,7 +1,7 @@
 import { PoseLandmarker } from '@mediapipe/tasks-vision'
 import { useGameStore } from '../game/state'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
-import type { Projectile } from '../game/loop'
+import type { Projectile, LastFireInfo } from '../game/loop'
 
 interface SmoothedPos {
   x: number
@@ -25,16 +25,16 @@ export interface RenderCanvasOptions {
   vh: number
   players: PlayerAssignment[]
   projectiles: Projectile[]
-  lastFireAt: Record<1 | 2, number>
+  lastFireAt: Record<1 | 2, LastFireInfo | null>
   now?: number
 }
 
 /**
- * Draws the entire canvas scene per frame according to Level 6 draw order:
+ * Draws the entire canvas scene per frame according to Level 6/7 draw order:
  * 1. Skeleton (faint white)
  * 2. HP bars (smoothed, rounded, color-coded, with labels)
- * 3. Projectiles + trails
- * 4. Fire flash text
+ * 3. Projectiles + trails (FIRE, TACKLE, BLOCK, HEAL)
+ * 4. Move flash text ("P{id} {MOVE}!")
  */
 export function renderCanvas({
   ctx,
@@ -103,7 +103,7 @@ export function renderCanvas({
   ctx.restore()
 
   // ──────────────────────────────────────────
-  // 2. HP bars (STEP D & E: smoothed, anti-jitter, unmirrored coords)
+  // 2. HP bars (smoothed, anti-jitter, unmirrored coords)
   // ──────────────────────────────────────────
   const storePlayers = useGameStore.getState().players
   const barWidth = 0.15 * vw
@@ -123,7 +123,7 @@ export function renderCanvas({
     const targetX = anchorX
     const targetY = anchorY - 0.08
 
-    // Anti-jitter smoothing (STEP E):
+    // Anti-jitter smoothing:
     // smoothed.x = 0.8 * smoothed.x + 0.2 * target.x
     // smoothed.y = 0.8 * smoothed.y + 0.2 * target.y
     if (!smoothedBarPos[id]) {
@@ -213,63 +213,135 @@ export function renderCanvas({
     const elapsed = now - p.bornAt
     const t = Math.max(0, Math.min(1, elapsed / p.durationMs))
 
-    // Current position
-    const currentX = (p.startX + (p.endX - p.startX) * t) * vw
-    const currentY = (p.startY + (p.endY - p.startY) * t) * vh
+    if (p.moveId === 'FIRE') {
+      // ── FIRE: orange-yellow circle r=20 with 4-circle trail ──
+      const currentX = (p.startX + (p.endX - p.startX) * t) * vw
+      const currentY = (p.startY + (p.endY - p.startY) * t) * vh
 
-    // 4-circle trail behind projectile: radius 12, 8, 5, 3
-    const trailConfig = [
-      { dt: 0.04, radius: 12, alpha: 0.7 },
-      { dt: 0.08, radius: 8, alpha: 0.45 },
-      { dt: 0.12, radius: 5, alpha: 0.25 },
-      { dt: 0.16, radius: 3, alpha: 0.12 },
-    ]
+      const trailConfig = [
+        { dt: 0.04, radius: 12, alpha: 0.7 },
+        { dt: 0.08, radius: 8, alpha: 0.45 },
+        { dt: 0.12, radius: 5, alpha: 0.25 },
+        { dt: 0.16, radius: 3, alpha: 0.12 },
+      ]
 
-    for (const item of trailConfig) {
-      const trailT = Math.max(0, t - item.dt)
-      const trailX = (p.startX + (p.endX - p.startX) * trailT) * vw
-      const trailY = (p.startY + (p.endY - p.startY) * trailT) * vh
+      for (const item of trailConfig) {
+        const trailT = Math.max(0, t - item.dt)
+        const trailX = (p.startX + (p.endX - p.startX) * trailT) * vw
+        const trailY = (p.startY + (p.endY - p.startY) * trailT) * vh
+
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 120, 0, ${item.alpha})`
+        ctx.fill()
+        ctx.restore()
+      }
 
       ctx.save()
+      ctx.shadowColor = '#ff6a00'
+      ctx.shadowBlur = 24
       ctx.beginPath()
-      ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 120, 0, ${item.alpha})`
+      ctx.arc(currentX, currentY, 20, 0, Math.PI * 2)
+
+      const grad = ctx.createRadialGradient(
+        currentX,
+        currentY,
+        2,
+        currentX,
+        currentY,
+        20
+      )
+      grad.addColorStop(0, '#ffffff')
+      grad.addColorStop(0.35, '#ffdd00')
+      grad.addColorStop(0.7, '#ff6a00')
+      grad.addColorStop(1, '#ff2200')
+
+      ctx.fillStyle = grad
       ctx.fill()
       ctx.restore()
+    } else if (p.moveId === 'TACKLE') {
+      // ── TACKLE: red circle r=14, short trail, faster (300ms) ──
+      const currentX = (p.startX + (p.endX - p.startX) * t) * vw
+      const currentY = (p.startY + (p.endY - p.startY) * t) * vh
+
+      const shortTrail = [
+        { dt: 0.04, radius: 9, alpha: 0.6 },
+        { dt: 0.08, radius: 5, alpha: 0.3 },
+      ]
+
+      for (const item of shortTrail) {
+        const trailT = Math.max(0, t - item.dt)
+        const trailX = (p.startX + (p.endX - p.startX) * trailT) * vw
+        const trailY = (p.startY + (p.endY - p.startY) * trailT) * vh
+
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(239, 68, 68, ${item.alpha})`
+        ctx.fill()
+        ctx.restore()
+      }
+
+      ctx.save()
+      ctx.shadowColor = '#ef4444'
+      ctx.shadowBlur = 20
+      ctx.beginPath()
+      ctx.arc(currentX, currentY, 14, 0, Math.PI * 2)
+      ctx.fillStyle = '#dc2626'
+      ctx.fill()
+      ctx.restore()
+    } else if (p.moveId === 'BLOCK') {
+      // ── BLOCK: blue ring expanding + fading at firing player's chest (400ms) ──
+      const alpha = Math.max(0, 1 - t)
+      const centerX = p.startX * vw
+      const centerY = p.startY * vh
+      const radius = 20 + 55 * t
+
+      ctx.save()
+      ctx.shadowColor = '#3b82f6'
+      ctx.shadowBlur = 18
+      ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`
+      ctx.lineWidth = 5
+      ctx.beginPath()
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.restore()
+    } else if (p.moveId === 'HEAL') {
+      // ── HEAL: green plus rising above firing player's head (600ms) ──
+      const alpha = Math.max(0, 1 - t)
+      const currentX = p.startX * vw
+      const currentY = (p.startY + (p.endY - p.startY) * t) * vh
+      const size = 16
+
+      ctx.save()
+      ctx.shadowColor = '#22c55e'
+      ctx.shadowBlur = 18
+      ctx.strokeStyle = `rgba(34, 197, 94, ${alpha})`
+      ctx.lineWidth = 6
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      // Horizontal bar
+      ctx.moveTo(currentX - size, currentY)
+      ctx.lineTo(currentX + size, currentY)
+      // Vertical bar
+      ctx.moveTo(currentX, currentY - size)
+      ctx.lineTo(currentX, currentY + size)
+      ctx.stroke()
+      ctx.restore()
     }
-
-    // Main glowing orange-yellow circle (radius 20px)
-    ctx.save()
-    ctx.shadowColor = '#ff6a00'
-    ctx.shadowBlur = 24
-    ctx.beginPath()
-    ctx.arc(currentX, currentY, 20, 0, Math.PI * 2)
-
-    const grad = ctx.createRadialGradient(
-      currentX,
-      currentY,
-      2,
-      currentX,
-      currentY,
-      20
-    )
-    grad.addColorStop(0, '#ffffff')
-    grad.addColorStop(0.35, '#ffdd00')
-    grad.addColorStop(0.7, '#ff6a00')
-    grad.addColorStop(1, '#ff2200')
-
-    ctx.fillStyle = grad
-    ctx.fill()
-    ctx.restore()
   }
 
   ctx.restore()
 
   // ──────────────────────────────────────────
-  // 4. Fire flash text ("P{id} FIRE!" at top corner of player's half)
+  // 4. Move flash text ("P{id} {MOVE}!" at top corner of player's half)
   // ──────────────────────────────────────────
   for (const id of [1, 2] as const) {
-    const elapsed = now - lastFireAt[id]
+    const fireInfo = lastFireAt[id]
+    if (!fireInfo) continue
+
+    const elapsed = now - fireInfo.timestamp
     if (elapsed >= 0 && elapsed < 600) {
       const alpha = Math.max(0, 1 - elapsed / 600)
 
@@ -286,11 +358,11 @@ export function renderCanvas({
       ctx.strokeStyle = `rgba(0, 0, 0, ${alpha})`
       ctx.lineWidth = 7
       ctx.lineJoin = 'round'
-      ctx.strokeText(`P${id} FIRE!`, textX, textY)
+      ctx.strokeText(`P${id} ${fireInfo.move}!`, textX, textY)
 
       // Bright orange (#ff6a00) fill
       ctx.fillStyle = `rgba(255, 106, 0, ${alpha})`
-      ctx.fillText(`P${id} FIRE!`, textX, textY)
+      ctx.fillText(`P${id} ${fireInfo.move}!`, textX, textY)
 
       ctx.restore()
     }

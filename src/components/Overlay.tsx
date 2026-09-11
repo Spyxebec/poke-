@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
+import type { Projectile, LastFireInfo } from '../game/loop'
 import { projectiles, lastFireAt as defaultLastFireAt } from '../game/loop'
 import { renderCanvas } from '../render/canvas'
 
@@ -8,8 +9,8 @@ interface OverlayProps {
   videoEl: HTMLVideoElement | null
   /** Player assignments with landmarks */
   players: PlayerAssignment[]
-  /** Timestamps when each player last fired FIRE */
-  lastFireAt?: Record<1 | 2, number>
+  /** Information when each player last fired a move */
+  lastFireAt?: Record<1 | 2, LastFireInfo | null>
 }
 
 /**

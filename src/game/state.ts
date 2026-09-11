@@ -119,7 +119,9 @@ export const useGameStore = create<GameStore>((set) => ({
     const now = Date.now()
     set((state) => ({
       players: state.players.map((player) =>
-        player.id === playerId ? { ...player, blockUntil: now + durationMs } : player
+        player.id === playerId
+          ? { ...player, blockUntil: durationMs <= 0 ? 0 : now + durationMs }
+          : player
       ) as [Player, Player],
     }))
   },

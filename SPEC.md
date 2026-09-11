@@ -146,9 +146,9 @@ Y increases downward. "Above" means SMALLER Y.
 | Move   | Rule |
 |--------|------|
 | FIRE (trigger: FINGER GUN, pose-only):<br>- One wrist extended horizontally away from the body at shoulder height.<br>- Conditions using pose landmarks:<br>  \|wrist.y - shoulder.y\| < 0.15          (at shoulder height)<br>  \|wrist.x - shoulderMidX\| > 0.20        (extended away from body)<br>  where shoulderMidX = (landmarks[11].x + landmarks[12].x) / 2.<br>- Check BOTH wrists. If either matches, gesture fires.<br>- Either arm is fine. Direction does not matter for detection.<br>  (Fireball direction is computed separately, see STEP C.) |
-| TACKLE | both wrists between shoulder and hip height, AND both wrists within 0.15 of hip.x |
-| BLOCK  | wrist[15] and wrist[16] within 0.1 of each other in x AND y, at chest height |
-| HEAL   | exactly one wrist above head (y < shoulder.y - 0.15), other below hip |
+| TACKLE | both fists pulled in at chest:<br>lm[15].y > shoulderMidY AND lm[15].y < hipMidY<br>lm[16].y > shoulderMidY AND lm[16].y < hipMidY<br>\|lm[15].x - shoulderMidX\| < 0.20<br>\|lm[16].x - shoulderMidX\| < 0.20 |
+| BLOCK  | arms crossed at chest:<br>\|lm[15].x - lm[16].x\| < 0.10<br>\|lm[15].y - lm[16].y\| < 0.10<br>lm[15].y > shoulderMidY AND lm[15].y < hipMidY<br>lm[16].y > shoulderMidY AND lm[16].y < hipMidY |
+| HEAL   | one hand up, one down:<br>(lm[15].y < lm[11].y - 0.15) XOR (lm[16].y < lm[12].y - 0.15)<br>AND the other wrist below hipMidY |
 
 If no rule matches, no gesture.
 Priority if multiple match: BLOCK > HEAL > FIRE > TACKLE.
