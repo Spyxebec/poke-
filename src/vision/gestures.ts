@@ -28,9 +28,14 @@ export interface DetectedGesture {
  * shoulderMidX = (lm[11].x + lm[12].x) / 2
  * shoulderMidY = (lm[11].y + lm[12].y) / 2
  * hipMidY      = (lm[23].y + lm[24].y) / 2
+ *
+ * FIRE rule enforces directionality toward the opponent:
+ * - For playerId === 1 (left side): arm extended to the RIGHT (wrist.x > shoulderMidX + 0.20)
+ * - For playerId === 2 (right side): arm extended to the LEFT (wrist.x < shoulderMidX - 0.20)
  */
 export function detectGesture(
-  landmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null
+  landmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null,
+  playerId: 1 | 2
 ): DetectedGesture | null {
   if (!landmarks || landmarks.length <= RIGHT_HIP) {
     return null
@@ -91,22 +96,43 @@ export function detectGesture(
   }
 
   // ──────────────────────────────────────────
-  // 3. FIRE (Priority 3: finger gun)
-  // One wrist extended horizontally away from body at shoulder height
-  // |wrist.y - shoulder.y| < 0.15
-  // |wrist.x - shoulderMidX| > 0.20
+  // 3. FIRE (Priority 3: finger gun directed toward opponent)
+  // For playerId === 1: arm extended to the RIGHT
+  //   wrist.x > shoulderMidX + 0.20
+  //   |wrist.y - shoulderMidY| < 0.15
+  // For playerId === 2: arm extended to the LEFT
+  //   wrist.x < shoulderMidX - 0.20
+  //   |wrist.y - shoulderMidY| < 0.15
   // ──────────────────────────────────────────
-  const leftFire =
-    Math.abs(leftWrist.y - leftShoulder.y) < 0.15 &&
-    Math.abs(leftWrist.x - shoulderMidX) > 0.20
-  const rightFire =
-    Math.abs(rightWrist.y - rightShoulder.y) < 0.15 &&
-    Math.abs(rightWrist.x - shoulderMidX) > 0.20
+  let leftFire = false
+  let rightFire = false
+
+  if (playerId === 1) {
+    leftFire =
+      leftWrist.x > shoulderMidX + 0.20 &&
+      Math.abs(leftWrist.y - shoulderMidY) < 0.15
+    rightFire =
+      rightWrist.x > shoulderMidX + 0.20 &&
+      Math.abs(rightWrist.y - shoulderMidY) < 0.15
+  } else {
+    leftFire =
+      leftWrist.x < shoulderMidX - 0.20 &&
+      Math.abs(leftWrist.y - shoulderMidY) < 0.15
+    rightFire =
+      rightWrist.x < shoulderMidX - 0.20 &&
+      Math.abs(rightWrist.y - shoulderMidY) < 0.15
+  }
 
   if (leftFire && rightFire) {
-    const leftDist = Math.abs(leftWrist.x - shoulderMidX)
-    const rightDist = Math.abs(rightWrist.x - shoulderMidX)
-    return { move: 'FIRE', handIndex: leftDist >= rightDist ? 15 : 16 }
+    const handIndex =
+      playerId === 1
+        ? leftWrist.x >= rightWrist.x
+          ? 15
+          : 16
+        : leftWrist.x <= rightWrist.x
+          ? 15
+          : 16
+    return { move: 'FIRE', handIndex }
   }
   if (leftFire) {
     return { move: 'FIRE', handIndex: 15 }

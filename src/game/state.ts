@@ -25,11 +25,23 @@ export interface Player {
   lastGestureAt: number
 }
 
+export interface FloatingTextItem {
+  text: string
+  x: number // normalized 0..1
+  y: number // normalized 0..1
+  bornAt: number // Date.now()
+  color: string
+  fontSize?: number
+  durationMs?: number
+  driftPx?: number
+}
+
 export interface GameState {
   phase: Phase
   players: [Player, Player]
   winner: 1 | 2 | null
-  floatingText: { text: string; x: number; y: number; bornAt: number }[]
+  floatingText: FloatingTextItem[]
+  hitFlashUntil: Record<1 | 2, number>
 }
 
 export interface GameActions {
@@ -40,6 +52,9 @@ export interface GameActions {
   setCooldown: (playerId: 1 | 2, ms: number) => void
   checkWin: () => void
   reset: () => void
+  addFloatingText: (item: FloatingTextItem) => void
+  setFloatingText: (items: FloatingTextItem[]) => void
+  setHitFlash: (playerId: 1 | 2, until: number) => void
 }
 
 export type GameStore = GameState & GameActions
@@ -59,6 +74,7 @@ export const useGameStore = create<GameStore>((set) => ({
   players: [createInitialPlayer(1), createInitialPlayer(2)],
   winner: null,
   floatingText: [],
+  hitFlashUntil: { 1: 0, 2: 0 },
 
   // Actions
   startBattle: () => {
@@ -97,10 +113,17 @@ export const useGameStore = create<GameStore>((set) => ({
         else winner = p1.hp > p2.hp ? 1 : 2
       }
 
+      // Hit flash on skeleton: STEP C (Date.now() + 150)
+      const hitFlashUntil = {
+        ...state.hitFlashUntil,
+        [playerId]: now + 150,
+      }
+
       return {
         players: updatedPlayers,
         phase,
         winner,
+        hitFlashUntil,
       }
     })
   },
@@ -156,7 +179,31 @@ export const useGameStore = create<GameStore>((set) => ({
       players: [createInitialPlayer(1), createInitialPlayer(2)],
       winner: null,
       floatingText: [],
+      hitFlashUntil: { 1: 0, 2: 0 },
     })
+  },
+
+  addFloatingText: (item: FloatingTextItem) => {
+    set((state) => {
+      const updated = [...state.floatingText, item]
+      // STEP D: If floatingText.length > 20, drop the oldest entries
+      const capped =
+        updated.length > 20 ? updated.slice(updated.length - 20) : updated
+      return { floatingText: capped }
+    })
+  },
+
+  setFloatingText: (items: FloatingTextItem[]) => {
+    set({ floatingText: items })
+  },
+
+  setHitFlash: (playerId: 1 | 2, until: number) => {
+    set((state) => ({
+      hitFlashUntil: {
+        ...state.hitFlashUntil,
+        [playerId]: until,
+      },
+    }))
   },
 }))
 

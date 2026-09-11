@@ -69,11 +69,18 @@ export function renderCanvas({
 
   const connections = PoseLandmarker.POSE_CONNECTIONS
 
+  const hitFlashUntil = useGameStore.getState().hitFlashUntil
+
   for (const player of players) {
+    const id = player.playerId
     const lm = player.landmarks
 
-    // Faint white connection lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)'
+    // STEP C: Hit flash on skeleton
+    if (Date.now() < (hitFlashUntil?.[id] ?? 0)) {
+      ctx.strokeStyle = '#ef4444'
+    } else {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'
+    }
     ctx.lineWidth = 2
     ctx.lineCap = 'round'
 
@@ -366,5 +373,51 @@ export function renderCanvas({
 
       ctx.restore()
     }
+  }
+
+  // ──────────────────────────────────────────
+  // 5. Floating text (STEP A, B, D)
+  // ──────────────────────────────────────────
+  let floatingEntries = useGameStore.getState().floatingText
+
+  // STEP D: If floatingText.length > 20, drop oldest entries before rendering
+  if (floatingEntries.length > 20) {
+    floatingEntries = floatingEntries.slice(floatingEntries.length - 20)
+  }
+
+  const activeEntries: typeof floatingEntries = []
+
+  for (const entry of floatingEntries) {
+    const duration = entry.durationMs ?? 1200
+    const elapsed = now - entry.bornAt
+    const t = Math.max(0, Math.min(1, elapsed / duration))
+
+    if (t >= 1) {
+      continue // Remove entries when t >= 1
+    }
+    activeEntries.push(entry)
+
+    const driftPx = entry.driftPx ?? 40
+    // Mirrored landmark X to screen coordinate: (1 - entry.x) * vw
+    const px = (1 - entry.x) * vw
+    const py = entry.y * vh - driftPx * t
+    const alpha = 1 - t
+    const fontSize = entry.fontSize ?? 24
+
+    ctx.save()
+    ctx.globalAlpha = alpha
+    ctx.font = `bold ${fontSize}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = entry.color
+    ctx.strokeStyle = 'black'
+    ctx.lineWidth = 4
+    ctx.strokeText(entry.text, px, py)
+    ctx.fillText(entry.text, px, py)
+    ctx.restore()
+  }
+
+  if (activeEntries.length !== floatingEntries.length) {
+    useGameStore.getState().setFloatingText(activeEntries)
   }
 }

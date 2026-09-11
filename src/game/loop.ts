@@ -1,7 +1,8 @@
 import { detectGesture } from '../vision/gestures'
 import { MOVES } from './moves'
 import { useGameStore } from './state'
-import type { MoveId } from './state'
+import type { MoveId, Phase } from './state'
+import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
 
@@ -65,6 +66,8 @@ export const lastFireAt: Record<1 | 2, LastFireInfo | null> = {
  */
 export let projectiles: Projectile[] = []
 
+let lastKnownPhase: Phase = 'IDLE'
+
 /**
  * Reset all gesture tracking, projectiles, and flash state.
  */
@@ -84,6 +87,7 @@ export function resetGestureTracking(): void {
   lastFireAt[1] = null
   lastFireAt[2] = null
   projectiles = []
+  lastKnownPhase = 'IDLE'
 }
 
 /**
@@ -109,6 +113,12 @@ export function gameLoop(
   const now = Date.now()
   const store = useGameStore.getState()
 
+  const currentPhase = store.phase
+  if (lastKnownPhase !== 'GAME_OVER' && currentPhase === 'GAME_OVER') {
+    playSfx('win')
+  }
+  lastKnownPhase = currentPhase
+
   // ── STEP C: Projectile Impact & Effect Resolution ──
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i]
@@ -124,6 +134,32 @@ export function gameLoop(
           console.log(`[Battle] P${targetId} blocked ${p.moveId} from P${p.fromPlayer}!`)
         } else {
           store.applyDamage(targetId, move.damage)
+          playSfx('hit')
+
+          // STEP B: On damage applied, push floating text at TARGET's shoulder midpoint
+          const targetPlayer = players.find((pl) => pl.playerId === targetId)
+          const tLm = targetPlayer?.landmarks
+          const targetShoulderMidX =
+            tLm && tLm[11] && tLm[12]
+              ? (tLm[11].x + tLm[12].x) / 2
+              : targetId === 1
+                ? 0.35
+                : 0.65
+          const targetShoulderMidY =
+            tLm && tLm[11] && tLm[12]
+              ? (tLm[11].y + tLm[12].y) / 2
+              : 0.40
+
+          store.addFloatingText({
+            text: `-${move.damage}`,
+            x: targetShoulderMidX,
+            y: targetShoulderMidY,
+            bornAt: now,
+            color: '#ef4444',
+            fontSize: 28,
+            durationMs: 900,
+            driftPx: 30,
+          })
         }
       } else if (p.moveId === 'BLOCK') {
         // Sets blockUntil = now + 1000 on self. No opponent damage.
@@ -138,6 +174,11 @@ export function gameLoop(
 
       // Call checkWin()
       store.checkWin()
+      const postPhase = useGameStore.getState().phase
+      if (lastKnownPhase !== 'GAME_OVER' && postPhase === 'GAME_OVER') {
+        playSfx('win')
+        lastKnownPhase = postPhase
+      }
 
       // Remove projectile
       projectiles.splice(i, 1)
@@ -152,7 +193,7 @@ export function gameLoop(
     presentIds.add(id)
 
     const tracker = gestureTrackers[id]
-    const detected = detectGesture(player.landmarks)
+    const detected = detectGesture(player.landmarks, id)
 
     const gestureChanged =
       detected?.move !== tracker.activeGesture ||
@@ -184,7 +225,9 @@ export function gameLoop(
         timestampMs - tracker.gestureStartedAt >= 300
       ) {
         const moveId = detected.move
+        const move = MOVES[moveId]
         console.log(`P${id} used ${moveId}!`)
+        playSfx(move.id.toLowerCase() as any)
 
         tracker.hasFired = true
         lastFireAt[id] = { move: moveId, timestamp: now }
@@ -194,6 +237,19 @@ export function gameLoop(
         const shoulder12 = lm[12]
         const chestX = shoulder11 && shoulder12 ? (shoulder11.x + shoulder12.x) / 2 : 0.5
         const chestY = shoulder11 && shoulder12 ? (shoulder11.y + shoulder12.y) / 2 : 0.4
+
+        // STEP A: On move fire, push floating text at shoulder midpoint - 0.10
+        const moveName = MOVES[moveId].name.toUpperCase()
+        store.addFloatingText({
+          text: `P${id} used ${moveName}!`,
+          x: chestX,
+          y: chestY - 0.10,
+          bornAt: now,
+          color: '#ffffff',
+          fontSize: 24,
+          durationMs: 1200,
+          driftPx: 40,
+        })
 
         const opponentId: 1 | 2 = id === 1 ? 2 : 1
         const opponent = players.find((p) => p.playerId === opponentId)

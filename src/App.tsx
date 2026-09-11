@@ -6,6 +6,9 @@ export function App() {
   const startBattle = useGameStore((state) => state.startBattle)
 
   const handleStartBattle = () => {
+    const a = new Audio('/sfx/hit.mp3')
+    a.volume = 0
+    a.play().then(() => { a.pause() }).catch(() => {})
     console.log('[App] Start Battle clicked: IDLE -> BATTLE')
     startBattle()
   }
