@@ -1,4 +1,5 @@
 import { Camera } from './components/Camera'
+import { HUD } from './components/HUD'
 import { usePhase, useGameStore } from './game/state'
 
 export function App() {
@@ -17,6 +18,9 @@ export function App() {
     <div className="relative w-screen h-screen overflow-hidden bg-black">
       {/* Background Camera & Pose Overlay */}
       <Camera />
+
+      {/* Win Overlay */}
+      <HUD />
 
       {/* IDLE Phase: Start Screen & Start Battle Button */}
       {phase === 'IDLE' && (

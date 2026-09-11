@@ -66,8 +66,6 @@ export const lastFireAt: Record<1 | 2, LastFireInfo | null> = {
  */
 export let projectiles: Projectile[] = []
 
-let lastKnownPhase: Phase = 'IDLE'
-
 /**
  * Reset all gesture tracking, projectiles, and flash state.
  */
@@ -86,9 +84,15 @@ export function resetGestureTracking(): void {
   }
   lastFireAt[1] = null
   lastFireAt[2] = null
-  projectiles = []
-  lastKnownPhase = 'IDLE'
+  projectiles.length = 0
 }
+
+// Reset gesture tracking and projectiles on restart
+useGameStore.subscribe((state, prevState) => {
+  if (state.phase === 'BATTLE' && prevState.phase === 'GAME_OVER') {
+    resetGestureTracking()
+  }
+})
 
 /**
  * Game loop step for gesture detection, projectile impacts, move effects, and cooldowns.
@@ -110,14 +114,14 @@ export function gameLoop(
   players: PlayerLike[],
   timestampMs: number = performance.now()
 ): void {
-  const now = Date.now()
   const store = useGameStore.getState()
 
-  const currentPhase = store.phase
-  if (lastKnownPhase !== 'GAME_OVER' && currentPhase === 'GAME_OVER') {
-    playSfx('win')
+  // STEP D: Loop guard — only run game logic during BATTLE
+  if (store.phase !== 'BATTLE') {
+    return
   }
-  lastKnownPhase = currentPhase
+
+  const now = Date.now()
 
   // ── STEP C: Projectile Impact & Effect Resolution ──
   for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -174,11 +178,6 @@ export function gameLoop(
 
       // Call checkWin()
       store.checkWin()
-      const postPhase = useGameStore.getState().phase
-      if (lastKnownPhase !== 'GAME_OVER' && postPhase === 'GAME_OVER') {
-        playSfx('win')
-        lastKnownPhase = postPhase
-      }
 
       // Remove projectile
       projectiles.splice(i, 1)

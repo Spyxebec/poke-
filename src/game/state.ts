@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { playSfx } from './audio'
 
 // ==========================================
 // SPEC §6: Data Models
@@ -42,6 +43,7 @@ export interface GameState {
   winner: 1 | 2 | null
   floatingText: FloatingTextItem[]
   hitFlashUntil: Record<1 | 2, number>
+  projectiles?: any[]
 }
 
 export interface GameActions {
@@ -68,13 +70,14 @@ const createInitialPlayer = (id: 1 | 2): Player => ({
   lastGestureAt: 0,
 })
 
-export const useGameStore = create<GameStore>((set) => ({
+export const useGameStore = create<GameStore>((set, get) => ({
   // Initial state
   phase: 'IDLE',
   players: [createInitialPlayer(1), createInitialPlayer(2)],
   winner: null,
   floatingText: [],
   hitFlashUntil: { 1: 0, 2: 0 },
+  projectiles: [],
 
   // Actions
   startBattle: () => {
@@ -87,6 +90,8 @@ export const useGameStore = create<GameStore>((set) => ({
 
   applyDamage: (playerId: 1 | 2, amount: number) => {
     set((state) => {
+      if (state.phase === 'GAME_OVER') return {}
+
       const now = Date.now()
       const updatedPlayers = state.players.map((player) => {
         if (player.id !== playerId) return player
@@ -100,19 +105,6 @@ export const useGameStore = create<GameStore>((set) => ({
         return { ...player, hp: newHp }
       }) as [Player, Player]
 
-      // Check win condition on HP drop
-      let winner: 1 | 2 | null = state.winner
-      let phase: Phase = state.phase
-      const p1 = updatedPlayers[0]
-      const p2 = updatedPlayers[1]
-
-      if (p1.hp <= 0 || p2.hp <= 0) {
-        phase = 'GAME_OVER'
-        if (p1.hp <= 0 && p2.hp > 0) winner = 2
-        else if (p2.hp <= 0 && p1.hp > 0) winner = 1
-        else winner = p1.hp > p2.hp ? 1 : 2
-      }
-
       // Hit flash on skeleton: STEP C (Date.now() + 150)
       const hitFlashUntil = {
         ...state.hitFlashUntil,
@@ -121,11 +113,12 @@ export const useGameStore = create<GameStore>((set) => ({
 
       return {
         players: updatedPlayers,
-        phase,
-        winner,
         hitFlashUntil,
       }
     })
+
+    // checkWin(): called after every applyDamage
+    get().checkWin()
   },
 
   heal: (playerId: 1 | 2, amount: number) => {
@@ -160,6 +153,9 @@ export const useGameStore = create<GameStore>((set) => ({
 
   checkWin: () => {
     set((state) => {
+      // Guard against re-triggering: if phase is already 'GAME_OVER', do nothing.
+      if (state.phase === 'GAME_OVER') return {}
+
       const p1 = state.players[0]
       const p2 = state.players[1]
       if (p1.hp <= 0 || p2.hp <= 0) {
@@ -167,6 +163,8 @@ export const useGameStore = create<GameStore>((set) => ({
         if (p1.hp <= 0 && p2.hp > 0) winner = 2
         else if (p2.hp <= 0 && p1.hp > 0) winner = 1
         else winner = p1.hp > p2.hp ? 1 : 2
+
+        playSfx('win')
         return { phase: 'GAME_OVER', winner }
       }
       return {}
@@ -175,11 +173,12 @@ export const useGameStore = create<GameStore>((set) => ({
 
   reset: () => {
     set({
-      phase: 'IDLE',
+      phase: 'BATTLE',
       players: [createInitialPlayer(1), createInitialPlayer(2)],
       winner: null,
       floatingText: [],
       hitFlashUntil: { 1: 0, 2: 0 },
+      projectiles: [],
     })
   },
 
