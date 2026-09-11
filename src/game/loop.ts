@@ -1,7 +1,7 @@
 import { detectGesture } from '../vision/gestures'
 import { MOVES } from './moves'
 import { useGameStore } from './state'
-import type { MoveId, Phase } from './state'
+import type { MoveId, Phase, Particle } from './state'
 import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
@@ -153,6 +153,23 @@ export function gameLoop(
             tLm && tLm[11] && tLm[12]
               ? (tLm[11].y + tLm[12].y) / 2
               : 0.40
+
+          // FEATURE 2: Particle burst on hit
+          const burstParticles: Particle[] = []
+          for (let pi = 0; pi < 8; pi++) {
+            const angle = (Math.PI * 2 * pi) / 8 + Math.random() * 0.3
+            const speed = 0.5 + Math.random() * 0.5
+            burstParticles.push({
+              x: targetShoulderMidX,
+              y: targetShoulderMidY,
+              vx: Math.cos(angle) * speed,
+              vy: Math.sin(angle) * speed,
+              bornAt: now,
+              lifeMs: 500,
+              color: '#ef4444',
+            })
+          }
+          store.addParticles(burstParticles)
 
           store.addFloatingText({
             text: `-${move.damage}`,

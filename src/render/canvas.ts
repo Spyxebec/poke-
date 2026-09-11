@@ -1,5 +1,6 @@
 import { PoseLandmarker } from '@mediapipe/tasks-vision'
 import { useGameStore } from '../game/state'
+import type { MoveId, FloatingTextItem, Particle, ConfettiPiece } from '../game/state'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
 import type { Projectile, LastFireInfo } from '../game/loop'
 
@@ -19,6 +20,95 @@ export function resetSmoothedBarPos(): void {
   smoothedBarPos[2] = null
 }
 
+let lastConfettiTime = 0
+
+// Pre-computed string lookups
+export const PLAYER_NAMES: Record<1 | 2, string> = {
+  1: 'P1',
+  2: 'P2',
+}
+
+export const MOVE_NAMES: Record<MoveId, string> = {
+  FIRE: 'Fire',
+  TACKLE: 'Tackle',
+  BLOCK: 'Block',
+  HEAL: 'Heal',
+}
+
+export const MOVE_FLASH_TEXT: Record<1 | 2, Record<MoveId, string>> = {
+  1: {
+    FIRE: 'P1 FIRE!',
+    TACKLE: 'P1 TACKLE!',
+    BLOCK: 'P1 BLOCK!',
+    HEAL: 'P1 HEAL!',
+  },
+  2: {
+    FIRE: 'P2 FIRE!',
+    TACKLE: 'P2 TACKLE!',
+    BLOCK: 'P2 BLOCK!',
+    HEAL: 'P2 HEAL!',
+  },
+}
+
+// Pre-computed HP text strings to avoid string concatenation per frame
+const HP_TEXT_CACHE: string[] = Array.from({ length: 101 }, (_, i) => `${i}/100`)
+function getHpText(hp: number): string {
+  const rounded = Math.max(0, Math.min(100, Math.round(hp)))
+  return HP_TEXT_CACHE[rounded] ?? `${rounded}/100`
+}
+
+// Pre-render the HP bar rounded-rect path with Path2D, reuse per draw
+let cachedBarWidth = 0
+let cachedBarPath: Path2D | null = null
+
+function getBarPath(width: number): Path2D {
+  if (!cachedBarPath || cachedBarWidth !== width) {
+    cachedBarPath = new Path2D()
+    cachedBarPath.roundRect(0, 0, width, 12, 4)
+    cachedBarWidth = width
+  }
+  return cachedBarPath
+}
+
+// Pre-allocated arrays and configs to avoid allocations in render loop
+const DASH_8_8 = [8, 8]
+const DASH_EMPTY: number[] = []
+const PLAYER_IDS = [1, 2] as const
+
+const FIRE_TRAIL_CONFIG = [
+  { dt: 0.04, radius: 12, style: 'rgba(255, 120, 0, 0.7)' },
+  { dt: 0.08, radius: 8, style: 'rgba(255, 120, 0, 0.45)' },
+  { dt: 0.12, radius: 5, style: 'rgba(255, 120, 0, 0.25)' },
+  { dt: 0.16, radius: 3, style: 'rgba(255, 120, 0, 0.12)' },
+] as const
+
+const TACKLE_TRAIL_CONFIG = [
+  { dt: 0.04, radius: 9, style: 'rgba(239, 68, 68, 0.6)' },
+  { dt: 0.08, radius: 5, style: 'rgba(239, 68, 68, 0.3)' },
+] as const
+
+const reusableActiveEntries: FloatingTextItem[] = []
+const reusableActiveParticles: Particle[] = []
+const reusableActiveConfetti: ConfettiPiece[] = []
+
+/**
+ * Setup canvas dimensions and 2D context at devicePixelRatio once.
+ */
+export function setupCanvas(
+  canvas: HTMLCanvasElement,
+  video: HTMLVideoElement,
+  ctx: CanvasRenderingContext2D
+): void {
+  const dpr = window.devicePixelRatio || 1
+  canvas.width = video.videoWidth * dpr
+  canvas.height = video.videoHeight * dpr
+  canvas.style.width = video.videoWidth + 'px'
+  canvas.style.height = video.videoHeight + 'px'
+  ctx.scale(dpr, dpr)
+  ctx.textBaseline = 'middle'
+  ctx.textAlign = 'center'
+}
+
 export interface RenderCanvasOptions {
   ctx: CanvasRenderingContext2D
   vw: number
@@ -30,11 +120,29 @@ export interface RenderCanvasOptions {
 }
 
 /**
- * Draws the entire canvas scene per frame according to Level 6/7 draw order:
+ * Projectile easing:
+ * - easeInOutQuad for the first 80% of flight, snap for last 20%:
+ *   if t < 0.8: eased = 2 * (t/0.8)^2
+ *   else:       eased = 1
+ * - Clamp t to [0, 1] as before.
+ * - Same for the trail.
+ */
+function easeProjectile(rawT: number): number {
+  const t = Math.max(0, Math.min(1, rawT))
+  if (t < 0.8) {
+    return 2 * Math.pow(t / 0.8, 2)
+  }
+  return 1
+}
+
+/**
+ * Draws the entire canvas scene per frame with performance optimizations:
  * 1. Skeleton (faint white)
  * 2. HP bars (smoothed, rounded, color-coded, with labels)
  * 3. Projectiles + trails (FIRE, TACKLE, BLOCK, HEAL)
  * 4. Move flash text ("P{id} {MOVE}!")
+ * 5. Floating text
+ * 6. Particle bursts & victory confetti
  */
 export function renderCanvas({
   ctx,
@@ -45,20 +153,41 @@ export function renderCanvas({
   lastFireAt,
   now = Date.now(),
 }: RenderCanvasOptions): void {
-  // Clear previous frame
-  ctx.clearRect(0, 0, vw, vh)
+  const canvas = ctx.canvas
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  if (!players || !players.some(p => p.landmarks && p.landmarks.length >= 33)) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    return
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-  // Center divider line (dashed)
-  ctx.save()
+  // FEATURE 1: Screen shake on hit (no allocations)
+  const shakeUntil = useGameStore.getState().shakeUntil
+  let shakeOffsetX = 0
+  let shakeOffsetY = 0
+  if (shakeUntil) {
+    if (now < shakeUntil[1]) {
+      shakeOffsetX += (Math.random() - 0.5) * 8
+      shakeOffsetY += (Math.random() - 0.5) * 8
+    }
+    if (now < shakeUntil[2]) {
+      shakeOffsetX += (Math.random() - 0.5) * 8
+      shakeOffsetY += (Math.random() - 0.5) * 8
+    }
+  }
+  if (shakeOffsetX !== 0 || shakeOffsetY !== 0) {
+    ctx.translate(shakeOffsetX, shakeOffsetY)
+  }
+
+  // Center divider line (dashed, no save/restore needed)
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'
   ctx.lineWidth = 1
-  ctx.setLineDash([8, 8])
+  ctx.setLineDash(DASH_8_8)
   ctx.beginPath()
-  ctx.moveTo(vw / 2, 0)
-  ctx.lineTo(vw / 2, vh)
+  ctx.moveTo(vw * 0.5, 0)
+  ctx.lineTo(vw * 0.5, vh)
   ctx.stroke()
-  ctx.setLineDash([])
-  ctx.restore()
+  ctx.setLineDash(DASH_EMPTY)
 
   // ──────────────────────────────────────────
   // 1. Skeleton (faint white, mirrored to match video)
@@ -68,15 +197,18 @@ export function renderCanvas({
   ctx.scale(-1, 1)
 
   const connections = PoseLandmarker.POSE_CONNECTIONS
-
   const hitFlashUntil = useGameStore.getState().hitFlashUntil
+  const hitFlash1 = hitFlashUntil?.[1] ?? 0
+  const hitFlash2 = hitFlashUntil?.[2] ?? 0
 
-  for (const player of players) {
+  for (let pi = 0; pi < players.length; pi++) {
+    const player = players[pi]
+    if (!player || !player.landmarks || player.landmarks.length < 33) continue
     const id = player.playerId
     const lm = player.landmarks
 
     // STEP C: Hit flash on skeleton
-    if (Date.now() < (hitFlashUntil?.[id] ?? 0)) {
+    if (now < (id === 1 ? hitFlash1 : hitFlash2)) {
       ctx.strokeStyle = '#ef4444'
     } else {
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'
@@ -84,9 +216,10 @@ export function renderCanvas({
     ctx.lineWidth = 2
     ctx.lineCap = 'round'
 
-    for (const { start, end } of connections) {
-      const from = lm[start]
-      const to = lm[end]
+    for (let ci = 0; ci < connections.length; ci++) {
+      const conn = connections[ci]
+      const from = lm[conn.start]
+      const to = lm[conn.end]
       if (!from || !to) continue
       if (from.visibility !== undefined && from.visibility < 0.3) continue
       if (to.visibility !== undefined && to.visibility < 0.3) continue
@@ -99,7 +232,9 @@ export function renderCanvas({
 
     // Faint landmark dots
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-    for (const landmark of lm) {
+    for (let li = 0; li < lm.length; li++) {
+      const landmark = lm[li]
+      if (!landmark) continue
       if (landmark.visibility !== undefined && landmark.visibility < 0.3) continue
       ctx.beginPath()
       ctx.arc(landmark.x * vw, landmark.y * vh, 2.5, 0, Math.PI * 2)
@@ -114,99 +249,91 @@ export function renderCanvas({
   // ──────────────────────────────────────────
   const storePlayers = useGameStore.getState().players
   const barWidth = 0.15 * vw
-  const barHeight = 12
-  const cornerRadius = 4
+  const barPath = getBarPath(barWidth)
 
-  for (const player of players) {
+  for (let pi = 0; pi < players.length; pi++) {
+    const player = players[pi]
+    if (!player || !player.landmarks || player.landmarks.length < 33) continue
     const lm11 = player.landmarks[11]
     const lm12 = player.landmarks[12]
     if (!lm11 || !lm12) continue
 
     const id = player.playerId
-    const anchorX = (lm11.x + lm12.x) / 2
-    const anchorY = (lm11.y + lm12.y) / 2
+    const anchorX = (lm11.x + lm12.x) * 0.5
+    const anchorY = (lm11.y + lm12.y) * 0.5
 
-    // Offset: 0.08 normalized units UP (smaller Y is UP)
+    // Offset: 0.08 normalized units UP
     const targetX = anchorX
     const targetY = anchorY - 0.08
 
-    // Anti-jitter smoothing:
-    // smoothed.x = 0.8 * smoothed.x + 0.2 * target.x
-    // smoothed.y = 0.8 * smoothed.y + 0.2 * target.y
-    if (!smoothedBarPos[id]) {
-      smoothedBarPos[id] = { x: targetX, y: targetY }
+    // Anti-jitter smoothing
+    let smoothed = smoothedBarPos[id]
+    if (!smoothed) {
+      smoothed = { x: targetX, y: targetY }
+      smoothedBarPos[id] = smoothed
     } else {
-      const smoothed = smoothedBarPos[id]!
       smoothed.x = 0.8 * smoothed.x + 0.2 * targetX
       smoothed.y = 0.8 * smoothed.y + 0.2 * targetY
     }
-
-    const smoothed = smoothedBarPos[id]!
 
     // Convert from mirrored normalized space to screen pixels
     const screenX = (1 - smoothed.x) * vw
     const screenY = smoothed.y * vh
 
-    const barLeft = screenX - barWidth / 2
-    const barTop = screenY - barHeight / 2
+    const barLeft = screenX - barWidth * 0.5
+    const barTop = screenY - 6 // 12 / 2
 
     const storePlayer = storePlayers[id - 1]
     const hp = storePlayer ? storePlayer.hp : 100
 
     // Fill color based on HP thresholds
-    let fillColor = '#22c55e' // Green (> 50)
+    let fillColor = '#22c55e'
     if (hp <= 20) {
-      fillColor = '#ef4444' // Red (<= 20)
+      fillColor = '#ef4444'
     } else if (hp <= 50) {
-      fillColor = '#eab308' // Yellow (> 20 and <= 50)
+      fillColor = '#eab308'
     }
 
+    // Translate to bar position (reused Path2D)
+    ctx.translate(barLeft, barTop)
+
     // Bar background (black with transparency)
-    ctx.save()
     ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
-    ctx.beginPath()
-    ctx.roundRect(barLeft, barTop, barWidth, barHeight, cornerRadius)
-    ctx.fill()
+    ctx.fill(barPath)
 
     // HP fill width
-    const fillWidth = barWidth * Math.max(0, Math.min(100, hp) / 100)
+    const fillWidth = barWidth * Math.max(0, Math.min(100, hp) * 0.01)
     if (fillWidth > 0) {
       ctx.fillStyle = fillColor
       ctx.beginPath()
-      ctx.roundRect(barLeft, barTop, fillWidth, barHeight, cornerRadius)
+      ctx.roundRect(0, 0, fillWidth, 12, 4)
       ctx.fill()
     }
 
     // 2px black border
     ctx.strokeStyle = '#000000'
     ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.roundRect(barLeft, barTop, barWidth, barHeight, cornerRadius)
-    ctx.stroke()
+    ctx.stroke(barPath)
 
-    // Label to the LEFT of the bar: "P1" or "P2", bold, white with black outline, right-aligned
-    const label = `P${id}`
+    ctx.translate(-barLeft, -barTop)
+
+    // Label to the LEFT of the bar: cached "P1" / "P2"
+    const label = PLAYER_NAMES[id]
     ctx.font = 'bold 15px system-ui, sans-serif'
-    ctx.textAlign = 'right'
-    ctx.textBaseline = 'middle'
     ctx.strokeStyle = '#000000'
     ctx.lineWidth = 3
-    ctx.strokeText(label, barLeft - 8, screenY)
+    ctx.strokeText(label, barLeft - 18, screenY)
     ctx.fillStyle = '#ffffff'
-    ctx.fillText(label, barLeft - 8, screenY)
+    ctx.fillText(label, barLeft - 18, screenY)
 
-    // Optional small HP number to the right of the bar: "72/100"
-    const hpText = `${Math.round(hp)}/100`
+    // HP number to the right of the bar: cached "72/100"
+    const hpText = getHpText(hp)
     ctx.font = 'bold 12px monospace'
-    ctx.textAlign = 'left'
-    ctx.textBaseline = 'middle'
     ctx.strokeStyle = '#000000'
     ctx.lineWidth = 3
-    ctx.strokeText(hpText, barLeft + barWidth + 8, screenY)
+    ctx.strokeText(hpText, barLeft + barWidth + 30, screenY)
     ctx.fillStyle = '#ffffff'
-    ctx.fillText(hpText, barLeft + barWidth + 8, screenY)
-
-    ctx.restore()
+    ctx.fillText(hpText, barLeft + barWidth + 30, screenY)
   }
 
   // ──────────────────────────────────────────
@@ -216,36 +343,30 @@ export function renderCanvas({
   ctx.translate(vw, 0)
   ctx.scale(-1, 1)
 
-  for (const p of projectiles) {
+  for (let i = 0; i < projectiles.length; i++) {
+    const p = projectiles[i]
     const elapsed = now - p.bornAt
     const t = Math.max(0, Math.min(1, elapsed / p.durationMs))
+    const eased = easeProjectile(t)
 
     if (p.moveId === 'FIRE') {
       // ── FIRE: orange-yellow circle r=20 with 4-circle trail ──
-      const currentX = (p.startX + (p.endX - p.startX) * t) * vw
-      const currentY = (p.startY + (p.endY - p.startY) * t) * vh
+      const currentX = (p.startX + (p.endX - p.startX) * eased) * vw
+      const currentY = (p.startY + (p.endY - p.startY) * eased) * vh
 
-      const trailConfig = [
-        { dt: 0.04, radius: 12, alpha: 0.7 },
-        { dt: 0.08, radius: 8, alpha: 0.45 },
-        { dt: 0.12, radius: 5, alpha: 0.25 },
-        { dt: 0.16, radius: 3, alpha: 0.12 },
-      ]
-
-      for (const item of trailConfig) {
+      for (let ti = 0; ti < FIRE_TRAIL_CONFIG.length; ti++) {
+        const item = FIRE_TRAIL_CONFIG[ti]
         const trailT = Math.max(0, t - item.dt)
-        const trailX = (p.startX + (p.endX - p.startX) * trailT) * vw
-        const trailY = (p.startY + (p.endY - p.startY) * trailT) * vh
+        const easedTrail = easeProjectile(trailT)
+        const trailX = (p.startX + (p.endX - p.startX) * easedTrail) * vw
+        const trailY = (p.startY + (p.endY - p.startY) * easedTrail) * vh
 
-        ctx.save()
         ctx.beginPath()
         ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(255, 120, 0, ${item.alpha})`
+        ctx.fillStyle = item.style
         ctx.fill()
-        ctx.restore()
       }
 
-      ctx.save()
       ctx.shadowColor = '#ff6a00'
       ctx.shadowBlur = 24
       ctx.beginPath()
@@ -266,38 +387,32 @@ export function renderCanvas({
 
       ctx.fillStyle = grad
       ctx.fill()
-      ctx.restore()
+      ctx.shadowBlur = 0
     } else if (p.moveId === 'TACKLE') {
       // ── TACKLE: red circle r=14, short trail, faster (300ms) ──
-      const currentX = (p.startX + (p.endX - p.startX) * t) * vw
-      const currentY = (p.startY + (p.endY - p.startY) * t) * vh
+      const currentX = (p.startX + (p.endX - p.startX) * eased) * vw
+      const currentY = (p.startY + (p.endY - p.startY) * eased) * vh
 
-      const shortTrail = [
-        { dt: 0.04, radius: 9, alpha: 0.6 },
-        { dt: 0.08, radius: 5, alpha: 0.3 },
-      ]
-
-      for (const item of shortTrail) {
+      for (let ti = 0; ti < TACKLE_TRAIL_CONFIG.length; ti++) {
+        const item = TACKLE_TRAIL_CONFIG[ti]
         const trailT = Math.max(0, t - item.dt)
-        const trailX = (p.startX + (p.endX - p.startX) * trailT) * vw
-        const trailY = (p.startY + (p.endY - p.startY) * trailT) * vh
+        const easedTrail = easeProjectile(trailT)
+        const trailX = (p.startX + (p.endX - p.startX) * easedTrail) * vw
+        const trailY = (p.startY + (p.endY - p.startY) * easedTrail) * vh
 
-        ctx.save()
         ctx.beginPath()
         ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(239, 68, 68, ${item.alpha})`
+        ctx.fillStyle = item.style
         ctx.fill()
-        ctx.restore()
       }
 
-      ctx.save()
       ctx.shadowColor = '#ef4444'
       ctx.shadowBlur = 20
       ctx.beginPath()
       ctx.arc(currentX, currentY, 14, 0, Math.PI * 2)
       ctx.fillStyle = '#dc2626'
       ctx.fill()
-      ctx.restore()
+      ctx.shadowBlur = 0
     } else if (p.moveId === 'BLOCK') {
       // ── BLOCK: blue ring expanding + fading at firing player's chest (400ms) ──
       const alpha = Math.max(0, 1 - t)
@@ -305,7 +420,6 @@ export function renderCanvas({
       const centerY = p.startY * vh
       const radius = 20 + 55 * t
 
-      ctx.save()
       ctx.shadowColor = '#3b82f6'
       ctx.shadowBlur = 18
       ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`
@@ -313,7 +427,7 @@ export function renderCanvas({
       ctx.beginPath()
       ctx.arc(centerX, centerY, radius, 0, Math.PI * 2)
       ctx.stroke()
-      ctx.restore()
+      ctx.shadowBlur = 0
     } else if (p.moveId === 'HEAL') {
       // ── HEAL: green plus rising above firing player's head (600ms) ──
       const alpha = Math.max(0, 1 - t)
@@ -321,21 +435,18 @@ export function renderCanvas({
       const currentY = (p.startY + (p.endY - p.startY) * t) * vh
       const size = 16
 
-      ctx.save()
       ctx.shadowColor = '#22c55e'
       ctx.shadowBlur = 18
       ctx.strokeStyle = `rgba(34, 197, 94, ${alpha})`
       ctx.lineWidth = 6
       ctx.lineCap = 'round'
       ctx.beginPath()
-      // Horizontal bar
       ctx.moveTo(currentX - size, currentY)
       ctx.lineTo(currentX + size, currentY)
-      // Vertical bar
       ctx.moveTo(currentX, currentY - size)
       ctx.lineTo(currentX, currentY + size)
       ctx.stroke()
-      ctx.restore()
+      ctx.shadowBlur = 0
     }
   }
 
@@ -344,80 +455,157 @@ export function renderCanvas({
   // ──────────────────────────────────────────
   // 4. Move flash text ("P{id} {MOVE}!" at top corner of player's half)
   // ──────────────────────────────────────────
-  for (const id of [1, 2] as const) {
+  for (let i = 0; i < PLAYER_IDS.length; i++) {
+    const id = PLAYER_IDS[i]
     const fireInfo = lastFireAt[id]
     if (!fireInfo) continue
 
     const elapsed = now - fireInfo.timestamp
     if (elapsed >= 0 && elapsed < 600) {
       const alpha = Math.max(0, 1 - elapsed / 600)
-
-      // Top corner of firing player's half
       const textX = id === 1 ? vw * 0.18 : vw * 0.82
       const textY = 54
+      const flashText =
+        MOVE_FLASH_TEXT[id]?.[fireInfo.move] ?? `${PLAYER_NAMES[id]} ${fireInfo.move}!`
 
-      ctx.save()
       ctx.font = '900 44px system-ui, sans-serif'
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-
-      // Black outline
       ctx.strokeStyle = `rgba(0, 0, 0, ${alpha})`
       ctx.lineWidth = 7
       ctx.lineJoin = 'round'
-      ctx.strokeText(`P${id} ${fireInfo.move}!`, textX, textY)
+      ctx.strokeText(flashText, textX, textY)
 
-      // Bright orange (#ff6a00) fill
       ctx.fillStyle = `rgba(255, 106, 0, ${alpha})`
-      ctx.fillText(`P${id} ${fireInfo.move}!`, textX, textY)
-
-      ctx.restore()
+      ctx.fillText(flashText, textX, textY)
     }
   }
 
   // ──────────────────────────────────────────
   // 5. Floating text (STEP A, B, D)
   // ──────────────────────────────────────────
-  let floatingEntries = useGameStore.getState().floatingText
+  const floatingEntries = useGameStore.getState().floatingText
+  const activeEntries = reusableActiveEntries
+  activeEntries.length = 0
 
-  // STEP D: If floatingText.length > 20, drop oldest entries before rendering
-  if (floatingEntries.length > 20) {
-    floatingEntries = floatingEntries.slice(floatingEntries.length - 20)
-  }
+  const startIdx = floatingEntries.length > 20 ? floatingEntries.length - 20 : 0
 
-  const activeEntries: typeof floatingEntries = []
-
-  for (const entry of floatingEntries) {
+  for (let i = startIdx; i < floatingEntries.length; i++) {
+    const entry = floatingEntries[i]
     const duration = entry.durationMs ?? 1200
     const elapsed = now - entry.bornAt
     const t = Math.max(0, Math.min(1, elapsed / duration))
 
     if (t >= 1) {
-      continue // Remove entries when t >= 1
+      continue
     }
     activeEntries.push(entry)
 
     const driftPx = entry.driftPx ?? 40
-    // Mirrored landmark X to screen coordinate: (1 - entry.x) * vw
     const px = (1 - entry.x) * vw
     const py = entry.y * vh - driftPx * t
     const alpha = 1 - t
     const fontSize = entry.fontSize ?? 24
 
-    ctx.save()
     ctx.globalAlpha = alpha
     ctx.font = `bold ${fontSize}px sans-serif`
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
     ctx.fillStyle = entry.color
     ctx.strokeStyle = 'black'
     ctx.lineWidth = 4
     ctx.strokeText(entry.text, px, py)
     ctx.fillText(entry.text, px, py)
-    ctx.restore()
   }
+  ctx.globalAlpha = 1
 
   if (activeEntries.length !== floatingEntries.length) {
-    useGameStore.getState().setFloatingText(activeEntries)
+    useGameStore.getState().setFloatingText([...activeEntries])
   }
+
+  // ──────────────────────────────────────────
+  // FEATURE 2: Particle burst on hit
+  // ──────────────────────────────────────────
+  const particleList = useGameStore.getState().particles
+  const activeParticles = reusableActiveParticles
+  activeParticles.length = 0
+
+  const pStartIdx = particleList.length > 100 ? particleList.length - 100 : 0
+
+  ctx.save()
+  ctx.translate(vw, 0)
+  ctx.scale(-1, 1)
+
+  for (let i = pStartIdx; i < particleList.length; i++) {
+    const part = particleList[i]
+    const elapsed = (now - part.bornAt) * 0.001
+    const t = Math.max(0, Math.min(1, (now - part.bornAt) / part.lifeMs))
+    if (t >= 1) {
+      continue
+    }
+    activeParticles.push(part)
+
+    const px = (part.x + part.vx * elapsed) * vw
+    const py = (part.y + part.vy * elapsed) * vh + elapsed * elapsed * 400
+    const alpha = 1 - t
+    const radius = 6 * (1 - t) + 2
+
+    ctx.globalAlpha = alpha
+    ctx.fillStyle = part.color
+    ctx.beginPath()
+    ctx.arc(px, py, radius, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.globalAlpha = 1
+  ctx.restore()
+
+  if (activeParticles.length !== particleList.length) {
+    useGameStore.getState().setParticles([...activeParticles])
+  }
+
+  // ──────────────────────────────────────────
+  // FEATURE 3: Victory confetti on GAME_OVER
+  // ──────────────────────────────────────────
+  const confettiList = useGameStore.getState().confetti
+  if (confettiList.length > 0) {
+    const activeConfetti = reusableActiveConfetti
+    activeConfetti.length = 0
+
+    const cStartIdx = confettiList.length > 60 ? confettiList.length - 60 : 0
+    const dt =
+      lastConfettiTime === 0
+        ? 0.016
+        : Math.min(0.1, (now - lastConfettiTime) * 0.001)
+
+    for (let i = cStartIdx; i < confettiList.length; i++) {
+      const piece = confettiList[i]
+      piece.y += piece.vy * dt
+      piece.x += piece.vx * dt
+      piece.rotation += piece.spin * dt
+
+      if (piece.y > 1.2) {
+        continue
+      }
+      activeConfetti.push(piece)
+
+      const px = piece.x * vw
+      const py = piece.y * vh
+
+      ctx.save()
+      ctx.translate(px, py)
+      ctx.rotate(piece.rotation)
+      ctx.fillStyle = piece.color
+      ctx.fillRect(
+        -piece.width * 0.5,
+        -piece.height * 0.5,
+        piece.width,
+        piece.height
+      )
+      ctx.restore()
+    }
+
+    if (activeConfetti.length !== confettiList.length) {
+      useGameStore.getState().setConfetti([...activeConfetti])
+    }
+  }
+  lastConfettiTime = now
+
+  // Reset transform to identity
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
 }

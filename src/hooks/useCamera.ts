@@ -28,19 +28,46 @@ export function useCamera(): UseCameraResult {
       setError(null)
 
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-          audio: false,
-        })
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'user',
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30, max: 60 },
+            },
+            audio: false,
+          })
+        } catch (primaryErr) {
+          console.warn('[useCamera] 1280x720 failed, retrying with 640x480 fallback:', primaryErr)
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'user',
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+              frameRate: { ideal: 30, max: 60 },
+            },
+            audio: false,
+          })
+        }
 
         if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          await videoRef.current.play()
+          const video = videoRef.current
+          video.srcObject = stream
+          await video.play()
           setStatus('active')
+
+          const logDimensions = () => {
+            if (video.videoWidth && video.videoHeight) {
+              console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+            }
+          }
+
+          if (video.videoWidth && video.videoHeight) {
+            logDimensions()
+          } else {
+            video.addEventListener('loadedmetadata', logDimensions, { once: true })
+          }
         }
       } catch (err) {
         if (err instanceof DOMException) {

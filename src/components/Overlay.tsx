@@ -13,6 +13,8 @@ interface OverlayProps {
   lastFireAt?: Record<1 | 2, LastFireInfo | null>
 }
 
+let lastDebugLog = 0
+
 /**
  * Transparent <canvas> overlaid on the video feed.
  * Delegates frame rendering to src/render/canvas.ts:
@@ -26,18 +28,33 @@ export function Overlay({ videoEl, players, lastFireAt }: OverlayProps) {
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas || !videoEl) return
+    const video = videoEl
+    if (!canvas || !video) return
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
     // Match canvas internal resolution to video's natural size
-    const vw = videoEl.videoWidth
-    const vh = videoEl.videoHeight
+    const vw = video.videoWidth
+    const vh = video.videoHeight
     if (vw === 0 || vh === 0) return
 
+    // Set canvas buffer to match video exactly — no devicePixelRatio scaling
     canvas.width = vw
     canvas.height = vh
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+
+    // Set text defaults once
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+
+    // Debug log once per second
+    const now = Date.now()
+    if (now - lastDebugLog > 1000) {
+      console.log('render', { canvasW: canvas.width, canvasH: canvas.height, videoReady: video.readyState })
+      lastDebugLog = now
+    }
 
     renderCanvas({
       ctx,
@@ -46,14 +63,15 @@ export function Overlay({ videoEl, players, lastFireAt }: OverlayProps) {
       players,
       projectiles,
       lastFireAt: lastFireAt ?? defaultLastFireAt,
-      now: Date.now(),
+      now,
     })
   }, [videoEl, players, lastFireAt])
 
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      style={{ zIndex: 2 }}
     />
   )
 }

@@ -37,13 +37,40 @@ export interface FloatingTextItem {
   driftPx?: number
 }
 
+export interface Particle {
+  x: number // normalized 0..1
+  y: number // normalized 0..1
+  vx: number // velocity per second, normalized
+  vy: number // velocity per second, normalized
+  bornAt: number
+  lifeMs: number // 500
+  color: string
+}
+
+export interface ConfettiPiece {
+  x: number // random normalized x
+  y: number // start above screen (-0.1)
+  vy: number // fall speed
+  vx: number // slight horizontal drift
+  rotation: number
+  spin: number // rad/sec
+  color: string
+  width: number
+  height: number
+  bornAt: number
+}
+
 export interface GameState {
   phase: Phase
   players: [Player, Player]
   winner: 1 | 2 | null
   floatingText: FloatingTextItem[]
   hitFlashUntil: Record<1 | 2, number>
+  shakeUntil: Record<1 | 2, number>
+  particles: Particle[]
+  confetti: ConfettiPiece[]
   projectiles?: any[]
+  hitstopUntil: number
 }
 
 export interface GameActions {
@@ -57,6 +84,9 @@ export interface GameActions {
   addFloatingText: (item: FloatingTextItem) => void
   setFloatingText: (items: FloatingTextItem[]) => void
   setHitFlash: (playerId: 1 | 2, until: number) => void
+  addParticles: (items: Particle[]) => void
+  setParticles: (items: Particle[]) => void
+  setConfetti: (items: ConfettiPiece[]) => void
 }
 
 export type GameStore = GameState & GameActions
@@ -77,7 +107,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   winner: null,
   floatingText: [],
   hitFlashUntil: { 1: 0, 2: 0 },
+  shakeUntil: { 1: 0, 2: 0 },
+  particles: [],
+  confetti: [],
   projectiles: [],
+  hitstopUntil: 0,
 
   // Actions
   startBattle: () => {
@@ -111,9 +145,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
         [playerId]: now + 150,
       }
 
+      // Screen shake on hit: 120ms duration
+      const shakeUntil = {
+        ...state.shakeUntil,
+        [playerId]: now + 120,
+      }
+
       return {
         players: updatedPlayers,
         hitFlashUntil,
+        shakeUntil,
+        hitstopUntil: now + 70,
       }
     })
 
@@ -165,7 +207,34 @@ export const useGameStore = create<GameStore>((set, get) => ({
         else winner = p1.hp > p2.hp ? 1 : 2
 
         playSfx('win')
-        return { phase: 'GAME_OVER', winner }
+
+        // FEATURE 3: Victory confetti on GAME_OVER
+        const now = Date.now()
+        const colors = [
+          '#ef4444',
+          '#22c55e',
+          '#eab308',
+          '#3b82f6',
+          '#a855f7',
+          '#f97316',
+        ]
+        const confetti: ConfettiPiece[] = []
+        for (let i = 0; i < 60; i++) {
+          confetti.push({
+            x: Math.random(),
+            y: -0.1,
+            vy: 0.3 + Math.random() * 0.4,
+            vx: (Math.random() - 0.5) * 0.2,
+            rotation: Math.random() * Math.PI * 2,
+            spin: (Math.random() - 0.5) * 4,
+            color: colors[Math.floor(Math.random() * colors.length)],
+            width: 8,
+            height: 14,
+            bornAt: now,
+          })
+        }
+
+        return { phase: 'GAME_OVER', winner, confetti }
       }
       return {}
     })
@@ -178,7 +247,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
       winner: null,
       floatingText: [],
       hitFlashUntil: { 1: 0, 2: 0 },
+      shakeUntil: { 1: 0, 2: 0 },
+      particles: [],
+      confetti: [],
       projectiles: [],
+      hitstopUntil: 0,
     })
   },
 
@@ -203,6 +276,26 @@ export const useGameStore = create<GameStore>((set, get) => ({
         [playerId]: until,
       },
     }))
+  },
+
+  addParticles: (items: Particle[]) => {
+    set((state) => {
+      const updated = [...state.particles, ...items]
+      const capped =
+        updated.length > 100 ? updated.slice(updated.length - 100) : updated
+      return { particles: capped }
+    })
+  },
+
+  setParticles: (items: Particle[]) => {
+    const capped =
+      items.length > 100 ? items.slice(items.length - 100) : items
+    set({ particles: capped })
+  },
+
+  setConfetti: (items: ConfettiPiece[]) => {
+    const capped = items.length > 60 ? items.slice(items.length - 60) : items
+    set({ confetti: capped })
   },
 }))
 

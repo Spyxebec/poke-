@@ -4,7 +4,10 @@ import { usePose } from '../hooks/usePose'
 import { usePlayerAssignment } from '../hooks/usePlayerAssignment'
 import { Overlay } from './Overlay'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
+import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import { gameLoop, lastFireAt } from '../game/loop'
+import { useGameStore } from '../game/state'
+
 
 /**
  * Fullscreen mirrored camera feed with pose skeleton overlay
@@ -12,12 +15,20 @@ import { gameLoop, lastFireAt } from '../game/loop'
  */
 export function Camera() {
   const { videoRef, status: camStatus, error: camError } = useCamera()
-  const { status: poseStatus, error: poseError, landmarks, detect } = usePose()
+  const { status: poseStatus, error: poseError, detectForVideo } = usePose()
   const { assign } = usePlayerAssignment()
 
   const rafIdRef = useRef<number>(0)
   const [videoReady, setVideoReady] = useState(false)
   const [players, setPlayers] = useState<PlayerAssignment[]>([])
+
+  // Throttling state stored in refs
+  const frameCountRef = useRef<number>(0)
+  const lastResultRef = useRef<NormalizedLandmark[][] | null>(null)
+  const lastDetectionAt = useRef<number>(0)
+  const lastDetectMsRef = useRef<number>(0)
+  const skippedCountRef = useRef<number>(0)
+  const latestPlayersRef = useRef<PlayerAssignment[]>([])
 
   // Start the detection loop once both camera and model are ready
   const startLoop = useCallback(() => {
@@ -25,14 +36,62 @@ export function Camera() {
     if (!video || camStatus !== 'active' || poseStatus !== 'ready') return
 
     function loop() {
-      if (videoRef.current) {
-        detect(videoRef.current, performance.now())
+      const vid = videoRef.current
+      if (vid && vid.readyState >= 2) {
+        const now = performance.now()
+        const hitstopUntil = useGameStore.getState().hitstopUntil
+
+        if (Date.now() < hitstopUntil) {
+          // Hitstop on damage:
+          // skip pose detection inference this frame (still render everything
+          // at last known positions)
+          if (latestPlayersRef.current.length > 0) {
+            gameLoop(latestPlayersRef.current, now)
+            setPlayers([...latestPlayersRef.current])
+          }
+          rafIdRef.current = requestAnimationFrame(loop)
+          return
+        }
+
+        const frameCount = frameCountRef.current++
+
+        if (frameCount % 2 === 0) {
+          // EVEN frames: run detectForVideo
+          const startDetect = performance.now()
+          const rawPoses = detectForVideo(vid, now)
+          lastDetectMsRef.current = performance.now() - startDetect
+
+          if (rawPoses !== undefined) {
+            lastResultRef.current = rawPoses
+            lastDetectionAt.current = now
+            latestPlayersRef.current = assign(rawPoses)
+          }
+        } else {
+          // ODD frames: reuse previous pose result unchanged
+          skippedCountRef.current++
+        }
+
+        // Log once every 60 frames: "detect: Xms, skipped: N"
+        if (frameCount > 0 && frameCount % 60 === 0) {
+          console.log(
+            `detect: ${Math.round(lastDetectMsRef.current)}ms, skipped: ${skippedCountRef.current}`
+          )
+          skippedCountRef.current = 0
+        }
+
+        // For RENDERING and GESTURE DETECTION, use the last result regardless
+        // of whether it was fresh this frame. Do NOT interpolate.
+        if (latestPlayersRef.current.length > 0) {
+          gameLoop(latestPlayersRef.current, now)
+          setPlayers([...latestPlayersRef.current])
+        }
       }
+
       rafIdRef.current = requestAnimationFrame(loop)
     }
 
     rafIdRef.current = requestAnimationFrame(loop)
-  }, [videoRef, camStatus, poseStatus, detect])
+  }, [videoRef, camStatus, poseStatus, detectForVideo, assign])
 
   useEffect(() => {
     startLoop()
@@ -43,13 +102,6 @@ export function Camera() {
     }
   }, [startLoop])
 
-  // Run player assignment and game loop whenever landmarks change
-  useEffect(() => {
-    const assigned = assign(landmarks)
-    setPlayers(assigned)
-    gameLoop(assigned, performance.now())
-  }, [landmarks, assign])
-
   // Track when video element is actually playing
   useEffect(() => {
     const video = videoRef.current
@@ -57,11 +109,17 @@ export function Camera() {
 
     function onPlaying() {
       setVideoReady(true)
+      if (video.videoWidth && video.videoHeight) {
+        console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+      }
     }
 
     video.addEventListener('playing', onPlaying)
     if (!video.paused && video.readyState >= 2) {
       setVideoReady(true)
+      if (video.videoWidth && video.videoHeight) {
+        console.log(`[Camera] ${video.videoWidth}x${video.videoHeight}`)
+      }
     }
 
     return () => {
@@ -87,6 +145,7 @@ export function Camera() {
         className={`absolute inset-0 h-full w-full object-cover scale-x-[-1] ${
           camStatus === 'active' ? 'opacity-100' : 'opacity-0'
         } transition-opacity duration-500`}
+        style={{ zIndex: 1 }}
       />
 
       {/* Skeleton overlay canvas with player labels and visual indicators */}
