@@ -61,8 +61,18 @@ export interface ConfettiPiece {
   bornAt: number
 }
 
+export type GameMode = 'BATTLE' | 'TRAINING'
+
+export interface DummyState {
+  hp: number
+  maxHp: number
+  anchorX: number
+  anchorY: number
+}
+
 export interface GameState {
   phase: Phase
+  mode: GameMode
   players: [Player, Player]
   winner: 1 | 2 | null
   floatingText: FloatingTextItem[]
@@ -75,16 +85,20 @@ export interface GameState {
   koFlashUntil: number
   koStartedAt: number
   showWinOverlay: boolean
+  dummy: DummyState
+  lastGesture: Record<1 | 2, string | null>
 }
 
 export interface GameActions {
   startBattle: () => void
+  startTraining: () => void
   applyDamage: (playerId: 1 | 2, amount: number) => void
   heal: (playerId: 1 | 2, amount: number) => void
   setBlock: (playerId: 1 | 2, durationMs: number) => void
   setCooldown: (playerId: 1 | 2, ms: number) => void
   checkWin: () => void
   reset: () => void
+  setDummyHp: (hp: number) => void
   addFloatingText: (item: FloatingTextItem) => void
   setFloatingText: (items: FloatingTextItem[]) => void
   setHitFlash: (playerId: 1 | 2, until: number) => void
@@ -106,9 +120,17 @@ const createInitialPlayer = (id: 1 | 2): Player => ({
   lastGestureAt: 0,
 })
 
+const createInitialDummy = (): DummyState => ({
+  hp: 100,
+  maxHp: 100,
+  anchorX: 0.75,
+  anchorY: 0.4,
+})
+
 export const useGameStore = create<GameStore>((set, get) => ({
   // Initial state
   phase: 'IDLE',
+  mode: 'BATTLE',
   players: [createInitialPlayer(1), createInitialPlayer(2)],
   winner: null,
   floatingText: [],
@@ -121,13 +143,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
   koFlashUntil: 0,
   koStartedAt: 0,
   showWinOverlay: false,
+  dummy: createInitialDummy(),
+  lastGesture: { 1: null, 2: null },
 
   // Actions
   startBattle: () => {
     set((state) => {
       if (state.phase === 'BATTLE') return {}
       console.log(`[GameState] startBattle: ${state.phase} -> BATTLE`)
-      return { phase: 'BATTLE' }
+      return { phase: 'BATTLE', mode: 'BATTLE' }
+    })
+  },
+
+  startTraining: () => {
+    set((state) => {
+      if (state.phase === 'BATTLE') return {}
+      console.log(`[GameState] startTraining: ${state.phase} -> TRAINING`)
+      return {
+        phase: 'BATTLE',
+        mode: 'TRAINING',
+        dummy: createInitialDummy(),
+        lastGesture: { 1: null, 2: null },
+      }
     })
   },
 
@@ -207,6 +244,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       // Guard against re-triggering: if phase is already 'GAME_OVER', do nothing.
       if (state.phase === 'GAME_OVER') return {}
 
+      // In TRAINING mode, checkWin does nothing — dummy death is handled separately
+      if (state.mode === 'TRAINING') return {}
+
       const p1 = state.players[0]
       const p2 = state.players[1]
       if (p1.hp <= 0 || p2.hp <= 0) {
@@ -261,8 +301,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   reset: () => {
-    set({
+    set((state) => ({
       phase: 'BATTLE',
+      // mode unchanged — stays TRAINING if it was TRAINING
       players: [createInitialPlayer(1), createInitialPlayer(2)],
       winner: null,
       floatingText: [],
@@ -275,7 +316,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
       koFlashUntil: 0,
       koStartedAt: 0,
       showWinOverlay: false,
-    })
+      dummy: { ...state.dummy, hp: state.dummy.maxHp },
+      lastGesture: { 1: null, 2: null },
+    }))
+  },
+
+  setDummyHp: (hp: number) => {
+    set((state) => ({
+      dummy: { ...state.dummy, hp: Math.max(0, Math.min(state.dummy.maxHp, hp)) },
+    }))
   },
 
   setShowWinOverlay: (showWinOverlay: boolean) => {

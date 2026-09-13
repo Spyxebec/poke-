@@ -39,6 +39,12 @@ export const VISIBILITY_THRESHOLD = 0.3
 /** Maximum duration (ms) to hold last-seen landmark values when missing/occluded */
 export const HOLD_DURATION_MS = 250
 
+export function flipLandmarksX(landmarks: NormalizedLandmark[]): NormalizedLandmark[] {
+  return landmarks.map((lm) => (lm ? { ...lm, x: 1 - lm.x } : lm))
+}
+
+let hasLoggedFlip = false
+
 /**
  * Loads the MediaPipe PoseLandmarker (full, VIDEO mode, up to 2 poses)
  * and exposes a `detect()` function to run on each frame.
@@ -165,9 +171,16 @@ export function usePose(): UsePoseResult {
         lastWarnTimeRef.current = now
       }
 
-      latestResult = result.landmarks
-      setLandmarks(result.landmarks)
-      return result.landmarks
+      const flippedLandmarks = result.landmarks.map(flipLandmarksX)
+
+      if (!hasLoggedFlip) {
+        console.log('[pose] landmark x flipped for mirror match')
+        hasLoggedFlip = true
+      }
+
+      latestResult = flippedLandmarks
+      setLandmarks(flippedLandmarks)
+      return flippedLandmarks
     },
     [status],
   )

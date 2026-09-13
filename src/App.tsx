@@ -6,6 +6,8 @@ import { usePhase, useGameStore } from './game/state'
 export function App() {
   const phase = usePhase()
   const startBattle = useGameStore((state) => state.startBattle)
+  const startTraining = useGameStore((state) => state.startTraining)
+  const mode = useGameStore((state) => state.mode)
 
   const handleStartBattle = () => {
     const a = new Audio('/sfx/hit.mp3')
@@ -13,6 +15,14 @@ export function App() {
     a.play().then(() => { a.pause() }).catch(() => {})
     console.log('[App] Start Battle clicked: IDLE -> BATTLE')
     startBattle()
+  }
+
+  const handleStartTraining = () => {
+    const a = new Audio('/sfx/hit.mp3')
+    a.volume = 0
+    a.play().then(() => { a.pause() }).catch(() => {})
+    console.log('[App] Start Training clicked: IDLE -> TRAINING')
+    startTraining()
   }
 
   return (
@@ -43,22 +53,36 @@ export function App() {
                 {' • '}
                 <span className="text-amber-400 font-semibold">Right = Player 2</span>
               </p>
-              <button
-                id="start-battle-button"
-                onClick={handleStartBattle}
-                className="px-8 py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 transition duration-150 cursor-pointer text-base uppercase tracking-wider"
-              >
-                Start Battle
-              </button>
+              <div className="flex gap-3 w-full">
+                <button
+                  id="start-battle-button"
+                  onClick={handleStartBattle}
+                  className="flex-1 px-6 py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 transition duration-150 cursor-pointer text-sm uppercase tracking-wider"
+                >
+                  Battle
+                </button>
+                <button
+                  id="start-training-button"
+                  onClick={handleStartTraining}
+                  className="flex-1 px-6 py-3 bg-violet-600 hover:bg-violet-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-violet-600/30 transition duration-150 cursor-pointer text-sm uppercase tracking-wider"
+                >
+                  Training
+                </button>
+              </div>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* BATTLE Phase Indicator */}
-      {phase === 'BATTLE' && (
+      {phase === 'BATTLE' && mode === 'BATTLE' && (
         <div className="absolute top-4 left-4 z-20 px-3 py-1.5 rounded-full bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-xs font-mono tracking-wide shadow-md">
           ● BATTLE ACTIVE
+        </div>
+      )}
+      {phase === 'BATTLE' && mode === 'TRAINING' && (
+        <div className="absolute top-4 left-4 z-20 px-3 py-1.5 rounded-full bg-violet-950/80 border border-violet-500/40 text-violet-300 text-xs font-mono tracking-wide shadow-md">
+          ● TRAINING MODE
         </div>
       )}
     </div>

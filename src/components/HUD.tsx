@@ -3,6 +3,7 @@ import { useGameStore } from '../game/state'
 
 export function HUD() {
   const phase = useGameStore((state) => state.phase)
+  const mode = useGameStore((state) => state.mode)
   const winner = useGameStore((state) => state.winner)
   const showWinOverlay = useGameStore((state) => state.showWinOverlay)
   const reset = useGameStore((state) => state.reset)
@@ -18,7 +19,7 @@ export function HUD() {
           className="fixed inset-0 z-50 bg-black/70 flex flex-col items-center justify-center gap-8"
         >
           <h1 className="text-6xl font-bold text-white drop-shadow-lg">
-            PLAYER {winner} WINS
+            {mode === 'TRAINING' ? 'DUMMY K.O.!' : `PLAYER ${winner} WINS`}
           </h1>
           <motion.button
             whileTap={{ scale: 0.95 }}
@@ -26,7 +27,7 @@ export function HUD() {
             onClick={reset}
             className="bg-white text-black px-8 py-4 rounded-lg font-bold text-xl hover:bg-gray-200 transition-colors cursor-pointer"
           >
-            Restart
+            {mode === 'TRAINING' ? 'Respawn Dummy' : 'Restart'}
           </motion.button>
         </motion.div>
       )}
@@ -35,4 +36,3 @@ export function HUD() {
 }
 
 export default HUD
-

@@ -190,12 +190,8 @@ export function renderCanvas({
   ctx.setLineDash(DASH_EMPTY)
 
   // ──────────────────────────────────────────
-  // 1. Skeleton (faint white, mirrored to match video)
+  // 1. Skeleton (faint white)
   // ──────────────────────────────────────────
-  ctx.save()
-  ctx.translate(vw, 0)
-  ctx.scale(-1, 1)
-
   const connections = PoseLandmarker.POSE_CONNECTIONS
   const hitFlashUntil = useGameStore.getState().hitFlashUntil
   const hitFlash1 = hitFlashUntil?.[1] ?? 0
@@ -242,8 +238,6 @@ export function renderCanvas({
     }
   }
 
-  ctx.restore()
-
   // ──────────────────────────────────────────
   // 2. HP & Stamina bars (STEP B, C, D)
   // ──────────────────────────────────────────
@@ -278,8 +272,8 @@ export function renderCanvas({
       smoothed.y = 0.8 * smoothed.y + 0.2 * targetY
     }
 
-    // Convert from mirrored normalized space to screen pixels
-    const screenX = (1 - smoothed.x) * canvas.width
+    // Convert normalized space to screen pixels
+    const screenX = smoothed.x * canvas.width
     const screenY = smoothed.y * canvas.height
 
     const barLeft = screenX - barWidth * 0.5
@@ -396,12 +390,8 @@ export function renderCanvas({
   }
 
   // ──────────────────────────────────────────
-  // 3. Projectiles + trails (mirrored context to match video landmarks)
+  // 3. Projectiles + trails
   // ──────────────────────────────────────────
-  ctx.save()
-  ctx.translate(vw, 0)
-  ctx.scale(-1, 1)
-
   for (let i = 0; i < projectiles.length; i++) {
     const p = projectiles[i]
     const elapsed = now - p.bornAt
@@ -509,8 +499,6 @@ export function renderCanvas({
     }
   }
 
-  ctx.restore()
-
   // ──────────────────────────────────────────
   // 4. Move flash text ("P{id} {MOVE}!" at top corner of player's half)
   // ──────────────────────────────────────────
@@ -559,7 +547,7 @@ export function renderCanvas({
     activeEntries.push(entry)
 
     const driftPx = entry.driftPx ?? 40
-    const px = (1 - entry.x) * vw
+    const px = entry.x * vw
     const py = entry.y * vh - driftPx * t
     const alpha = 1 - t
     const fontSize = entry.fontSize ?? 24
@@ -587,10 +575,6 @@ export function renderCanvas({
 
   const pStartIdx = particleList.length > 100 ? particleList.length - 100 : 0
 
-  ctx.save()
-  ctx.translate(vw, 0)
-  ctx.scale(-1, 1)
-
   for (let i = pStartIdx; i < particleList.length; i++) {
     const part = particleList[i]
     const elapsed = (now - part.bornAt) * 0.001
@@ -612,7 +596,6 @@ export function renderCanvas({
     ctx.fill()
   }
   ctx.globalAlpha = 1
-  ctx.restore()
 
   if (activeParticles.length !== particleList.length) {
     useGameStore.getState().setParticles([...activeParticles])
@@ -664,6 +647,123 @@ export function renderCanvas({
     }
   }
   lastConfettiTime = now
+
+  // ──────────────────────────────────────────
+  // TRAINING: Dummy rendering
+  // ──────────────────────────────────────────
+  const storeState = useGameStore.getState()
+  if (storeState.mode === 'TRAINING' && storeState.phase === 'BATTLE') {
+    const dummy = storeState.dummy
+    const dx = dummy.anchorX * vw
+    const dy = dummy.anchorY * vh
+    const dummyRadius = Math.min(vw, vh) * 0.06
+
+    // Punching bag body (circle + rectangle below)
+    ctx.save()
+
+    // Glow when hit
+    const dummyHitFlash = storeState.hitstopUntil > now
+    if (dummyHitFlash) {
+      ctx.shadowColor = '#ff4444'
+      ctx.shadowBlur = 20
+    }
+
+    // Main circle
+    ctx.fillStyle = dummy.hp > 0 ? '#e74c3c' : '#555555'
+    ctx.beginPath()
+    ctx.arc(dx, dy, dummyRadius, 0, Math.PI * 2)
+    ctx.fill()
+
+    // Face (two eyes + mouth)
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath()
+    ctx.arc(dx - dummyRadius * 0.3, dy - dummyRadius * 0.15, dummyRadius * 0.1, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(dx + dummyRadius * 0.3, dy - dummyRadius * 0.15, dummyRadius * 0.1, 0, Math.PI * 2)
+    ctx.fill()
+    // Mouth
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.arc(dx, dy + dummyRadius * 0.2, dummyRadius * 0.25, 0, Math.PI)
+    ctx.stroke()
+
+    // Body / stand
+    ctx.fillStyle = dummy.hp > 0 ? '#c0392b' : '#444444'
+    ctx.fillRect(dx - dummyRadius * 0.3, dy + dummyRadius, dummyRadius * 0.6, dummyRadius * 1.2)
+    ctx.fillRect(dx - dummyRadius * 0.6, dy + dummyRadius + dummyRadius * 1.2, dummyRadius * 1.2, dummyRadius * 0.15)
+
+    ctx.restore()
+
+    // HP bar above dummy
+    const barW = dummyRadius * 2.5
+    const barH = 6
+    const barX = dx - barW / 2
+    const barY = dy - dummyRadius - 16
+    const hpRatio = Math.max(0, dummy.hp / dummy.maxHp)
+
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, barH + 2)
+    const hpColor = hpRatio > 0.5 ? '#22c55e' : hpRatio > 0.25 ? '#eab308' : '#ef4444'
+    ctx.fillStyle = hpColor
+    ctx.fillRect(barX, barY, barW * hpRatio, barH)
+
+    // Label
+    ctx.font = 'bold 12px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'bottom'
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText('DUMMY', dx, barY - 4)
+    ctx.fillText(`${Math.round(dummy.hp)}/${dummy.maxHp}`, dx, barY + barH + 14)
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'alphabetic'
+  }
+
+  // ──────────────────────────────────────────
+  // TRAINING: Feedback panel (top-right, last gesture)
+  // ──────────────────────────────────────────
+  if (storeState.mode === 'TRAINING' && storeState.phase === 'BATTLE') {
+    const panelX = vw - 170
+    const panelY = 12
+    const panelW = 158
+    const panelH = 58
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
+    ctx.strokeStyle = 'rgba(139, 92, 246, 0.5)'
+    ctx.lineWidth = 1
+
+    // Rounded rect
+    const r = 8
+    ctx.beginPath()
+    ctx.moveTo(panelX + r, panelY)
+    ctx.lineTo(panelX + panelW - r, panelY)
+    ctx.arcTo(panelX + panelW, panelY, panelX + panelW, panelY + r, r)
+    ctx.lineTo(panelX + panelW, panelY + panelH - r)
+    ctx.arcTo(panelX + panelW, panelY + panelH, panelX + panelW - r, panelY + panelH, r)
+    ctx.lineTo(panelX + r, panelY + panelH)
+    ctx.arcTo(panelX, panelY + panelH, panelX, panelY + panelH - r, r)
+    ctx.lineTo(panelX, panelY + r)
+    ctx.arcTo(panelX, panelY, panelX + r, panelY, r)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    ctx.font = 'bold 11px sans-serif'
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+    ctx.fillStyle = '#a78bfa'
+    ctx.fillText('TRAINING MODE', panelX + 10, panelY + 8)
+    ctx.font = '11px sans-serif'
+    ctx.fillStyle = '#d1d5db'
+    const lastGest = storeState.lastGesture[1] ?? 'None'
+    ctx.fillText(`Last: ${lastGest}`, panelX + 10, panelY + 26)
+    ctx.fillText(`Dummy: ${Math.round(storeState.dummy.hp)}HP`, panelX + 10, panelY + 40)
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'alphabetic'
+  }
 
   // ──────────────────────────────────────────
   // K.O. screen flash + zoom punch

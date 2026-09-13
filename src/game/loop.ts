@@ -2,7 +2,7 @@ import { detectGesture, detectPeaceSign } from '../vision/gestures'
 import { latestHandResult } from '../vision/hands'
 import { MOVES } from './moves'
 import { useGameStore } from './state'
-import type { MoveId, Phase, Particle, Player } from './state'
+import type { MoveId, Phase, Particle, Player, ConfettiPiece } from './state'
 import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
@@ -161,6 +161,13 @@ export function gameLoop(
 
   const now = Date.now()
 
+  // ── TRAINING: Dummy regen (5 HP/sec, stops at death) ──
+  if (store.mode === 'TRAINING' && store.dummy.hp > 0) {
+    const dtSec = 1 / 60 // approximate frame time
+    const newDummyHp = Math.min(store.dummy.maxHp, store.dummy.hp + 5 * dtSec)
+    store.setDummyHp(newDummyHp)
+  }
+
   // ── STEP C: Projectile Impact & Effect Resolution ──
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i]
@@ -170,6 +177,84 @@ export function gameLoop(
       const target = store.players[targetId - 1]
 
       if (p.moveId === 'FIRE' || p.moveId === 'TACKLE') {
+        // ── TRAINING: Damage dummy instead of opponent ──
+        if (store.mode === 'TRAINING') {
+          if (p.fromPlayer === 1) {
+            const newDummyHp = Math.max(0, store.dummy.hp - move.damage)
+            store.setDummyHp(newDummyHp)
+            playSfx('hit')
+
+            // Particle burst at dummy position
+            const dummyX = store.dummy.anchorX
+            const dummyY = store.dummy.anchorY
+            const burstParticles: Particle[] = []
+            for (let pi = 0; pi < 8; pi++) {
+              const angle = (Math.PI * 2 * pi) / 8 + Math.random() * 0.3
+              const speed = 0.5 + Math.random() * 0.5
+              burstParticles.push({
+                x: dummyX,
+                y: dummyY,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                bornAt: now,
+                lifeMs: 500,
+                color: '#ef4444',
+              })
+            }
+            store.addParticles(burstParticles)
+
+            store.addFloatingText({
+              text: `-${move.damage}`,
+              x: dummyX,
+              y: dummyY,
+              bornAt: now,
+              color: '#ef4444',
+              fontSize: 28,
+              durationMs: 900,
+              driftPx: 30,
+            })
+
+            // Screen shake
+            useGameStore.setState({
+              shakeUntil: { ...store.shakeUntil, 1: now + 120 },
+              hitstopUntil: now + 70,
+            })
+
+            // If dummy dead: trigger GAME_OVER
+            if (newDummyHp <= 0 && store.phase === 'BATTLE') {
+              playSfx('win')
+              const colors = ['#ef4444','#22c55e','#eab308','#3b82f6','#a855f7','#f97316']
+              const confetti: ConfettiPiece[] = []
+              for (let ci = 0; ci < 60; ci++) {
+                confetti.push({
+                  x: Math.random(),
+                  y: -0.1,
+                  vy: 0.3 + Math.random() * 0.4,
+                  vx: (Math.random() - 0.5) * 0.2,
+                  rotation: Math.random() * Math.PI * 2,
+                  spin: (Math.random() - 0.5) * 4,
+                  color: colors[Math.floor(Math.random() * colors.length)],
+                  width: 8,
+                  height: 14,
+                  bornAt: now,
+                })
+              }
+              setTimeout(() => {
+                useGameStore.setState({ showWinOverlay: true })
+              }, 600)
+              useGameStore.setState({
+                phase: 'GAME_OVER',
+                winner: 1,
+                confetti,
+                koStartedAt: now,
+                koFlashUntil: now + 400,
+                showWinOverlay: false,
+              })
+            }
+          }
+          // Player 2 does not exist in training — ignore
+        } else {
+        // ── BATTLE mode: normal opponent damage ──
         if (target && target.blockUntil > now) {
           // Block consumed: no damage, clear target block
           store.setBlock(targetId, 0)
@@ -220,6 +305,7 @@ export function gameLoop(
             driftPx: 30,
           })
         }
+        } // end BATTLE else
       } else if (p.moveId === 'BLOCK') {
         // Sets blockUntil = now + 1000 on self. No opponent damage.
         store.setBlock(p.fromPlayer, 1000)
@@ -231,7 +317,7 @@ export function gameLoop(
       // Set firing player's cooldownUntil = now + move.cooldownMs
       store.setCooldown(p.fromPlayer, move.cooldownMs)
 
-      // Call checkWin()
+      // Call checkWin() (skipped in TRAINING by checkWin itself)
       store.checkWin()
 
       // Remove projectile
@@ -244,6 +330,10 @@ export function gameLoop(
 
   for (const player of players) {
     const id = player.playerId
+
+    // STEP 5: Skip Player 2 gesture detection in training
+    if (store.mode === 'TRAINING' && id === 2) continue
+
     presentIds.add(id)
 
     // ── CHARGE: Peace sign hand detection ──
@@ -403,11 +493,18 @@ export function gameLoop(
       ) {
         const moveId = detected.move
         const move = MOVES[moveId]
+        const moveName = MOVES[moveId].name.toUpperCase()
         console.log(`P${id} used ${moveId}!`)
         playSfx(move.id.toLowerCase() as any)
 
         tracker.hasFired = true
         lastFireAt[id] = { move: moveId, timestamp: now }
+
+        // Update lastGesture for training panel feedback
+        console.log('[loop] moveName about to be used:', moveName)
+        useGameStore.setState((state) => ({
+          lastGesture: { ...state.lastGesture, [id]: moveName },
+        }))
 
         const lm = player.landmarks
         const shoulder11 = lm[11]
@@ -416,7 +513,6 @@ export function gameLoop(
         const chestY = shoulder11 && shoulder12 ? (shoulder11.y + shoulder12.y) / 2 : 0.4
 
         // STEP A: On move fire, push floating text at shoulder midpoint - 0.10
-        const moveName = MOVES[moveId].name.toUpperCase()
         store.addFloatingText({
           text: `P${id} used ${moveName}!`,
           x: chestX,
@@ -433,7 +529,21 @@ export function gameLoop(
 
         if (moveId === 'FIRE') {
           const firingWrist = detected.handIndex ? lm[detected.handIndex] : lm[15]
-          if (
+
+          // In training mode, target the dummy
+          if (store.mode === 'TRAINING' && id === 1 && firingWrist) {
+            projectiles.push({
+              id: `proj_${id}_${now}_${Math.random().toString(36).substring(2, 7)}`,
+              fromPlayer: id,
+              moveId: 'FIRE',
+              startX: firingWrist.x,
+              startY: firingWrist.y,
+              endX: store.dummy.anchorX,
+              endY: store.dummy.anchorY,
+              bornAt: now,
+              durationMs: 500,
+            })
+          } else if (
             opponent &&
             opponent.landmarks[11] &&
             opponent.landmarks[12] &&
@@ -457,7 +567,20 @@ export function gameLoop(
             store.setCooldown(id, MOVES.FIRE.cooldownMs)
           }
         } else if (moveId === 'TACKLE') {
-          if (opponent && opponent.landmarks[11] && opponent.landmarks[12]) {
+          // In training mode, target the dummy
+          if (store.mode === 'TRAINING' && id === 1) {
+            projectiles.push({
+              id: `proj_${id}_${now}_${Math.random().toString(36).substring(2, 7)}`,
+              fromPlayer: id,
+              moveId: 'TACKLE',
+              startX: chestX,
+              startY: chestY,
+              endX: store.dummy.anchorX,
+              endY: store.dummy.anchorY,
+              bornAt: now,
+              durationMs: 300,
+            })
+          } else if (opponent && opponent.landmarks[11] && opponent.landmarks[12]) {
             const opp11 = opponent.landmarks[11]
             const opp12 = opponent.landmarks[12]
             projectiles.push({
