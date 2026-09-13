@@ -222,6 +222,7 @@ export function gameLoop(
 
             // If dummy dead: trigger GAME_OVER
             if (newDummyHp <= 0 && store.phase === 'BATTLE') {
+              console.log('[ko] dummy died, koStartedAt =', now)
               playSfx('win')
               const colors = ['#ef4444','#22c55e','#eab308','#3b82f6','#a855f7','#f97316']
               const confetti: ConfettiPiece[] = []

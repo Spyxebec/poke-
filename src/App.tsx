@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Camera } from './components/Camera'
 import { HUD } from './components/HUD'
 import { usePhase, useGameStore } from './game/state'
+import { MEME_CLIPS } from './game/memes'
 
 export function App() {
   const phase = usePhase()
@@ -13,6 +14,17 @@ export function App() {
     const a = new Audio('/sfx/hit.mp3')
     a.volume = 0
     a.play().then(() => { a.pause() }).catch(() => {})
+
+    const sample = MEME_CLIPS[0]
+    if (sample) {
+      const unlock = new Audio(sample)
+      unlock.volume = 0
+      unlock.play().then(() => {
+        unlock.pause()
+        unlock.currentTime = 0
+      }).catch(() => {})
+    }
+
     console.log('[App] Start Battle clicked: IDLE -> BATTLE')
     startBattle()
   }
@@ -21,6 +33,17 @@ export function App() {
     const a = new Audio('/sfx/hit.mp3')
     a.volume = 0
     a.play().then(() => { a.pause() }).catch(() => {})
+
+    const sample = MEME_CLIPS[0]
+    if (sample) {
+      const unlock = new Audio(sample)
+      unlock.volume = 0
+      unlock.play().then(() => {
+        unlock.pause()
+        unlock.currentTime = 0
+      }).catch(() => {})
+    }
+
     console.log('[App] Start Training clicked: IDLE -> TRAINING')
     startTraining()
   }

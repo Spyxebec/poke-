@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { playSfx } from './audio'
+import { pickRandomMeme } from './memes'
 
 // ==========================================
 // SPEC §6: Data Models
@@ -85,6 +86,8 @@ export interface GameState {
   koFlashUntil: number
   koStartedAt: number
   showWinOverlay: boolean
+  activeMemePath: string
+  memeFinished: boolean
   dummy: DummyState
   lastGesture: Record<1 | 2, string | null>
 }
@@ -106,6 +109,8 @@ export interface GameActions {
   setParticles: (items: Particle[]) => void
   setConfetti: (items: ConfettiPiece[]) => void
   setShowWinOverlay: (show: boolean) => void
+  setMemeFinished: (finished: boolean) => void
+  markMemeFinished: () => void
 }
 
 export type GameStore = GameState & GameActions
@@ -143,6 +148,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   koFlashUntil: 0,
   koStartedAt: 0,
   showWinOverlay: false,
+  activeMemePath: '',
+  memeFinished: false,
   dummy: createInitialDummy(),
   lastGesture: { 1: null, 2: null },
 
@@ -244,8 +251,53 @@ export const useGameStore = create<GameStore>((set, get) => ({
       // Guard against re-triggering: if phase is already 'GAME_OVER', do nothing.
       if (state.phase === 'GAME_OVER') return {}
 
-      // In TRAINING mode, checkWin does nothing — dummy death is handled separately
-      if (state.mode === 'TRAINING') return {}
+      // In TRAINING mode, check if dummy died
+      if (state.mode === 'TRAINING') {
+        if (state.dummy.hp <= 0) {
+          const now = Date.now()
+          console.log('[ko] dummy died, koStartedAt =', now)
+          playSfx('win')
+
+          const colors = [
+            '#ef4444',
+            '#22c55e',
+            '#eab308',
+            '#3b82f6',
+            '#a855f7',
+            '#f97316',
+          ]
+          const confetti: ConfettiPiece[] = []
+          for (let i = 0; i < 60; i++) {
+            confetti.push({
+              x: Math.random(),
+              y: -0.1,
+              vy: 0.3 + Math.random() * 0.4,
+              vx: (Math.random() - 0.5) * 0.2,
+              rotation: Math.random() * Math.PI * 2,
+              spin: (Math.random() - 0.5) * 4,
+              color: colors[Math.floor(Math.random() * colors.length)],
+              width: 8,
+              height: 14,
+              bornAt: now,
+            })
+          }
+
+          const activeMemePath = pickRandomMeme()
+          console.log('[meme] picked:', activeMemePath)
+
+          return {
+            phase: 'GAME_OVER',
+            winner: 1,
+            confetti,
+            koStartedAt: now,
+            koFlashUntil: now + 400,
+            showWinOverlay: false,
+            activeMemePath,
+            memeFinished: false,
+          }
+        }
+        return {}
+      }
 
       const p1 = state.players[0]
       const p2 = state.players[1]
@@ -283,9 +335,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           })
         }
 
-        setTimeout(() => {
-          set({ showWinOverlay: true })
-        }, 600)
+        const activeMemePath = pickRandomMeme()
+        console.log('[meme] picked:', activeMemePath)
 
         return {
           phase: 'GAME_OVER',
@@ -294,6 +345,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
           koStartedAt: now,
           koFlashUntil: now + 400,
           showWinOverlay: false,
+          activeMemePath,
+          memeFinished: false,
         }
       }
       return {}
@@ -316,6 +369,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       koFlashUntil: 0,
       koStartedAt: 0,
       showWinOverlay: false,
+      activeMemePath: '',
+      memeFinished: false,
       dummy: { ...state.dummy, hp: state.dummy.maxHp },
       lastGesture: { 1: null, 2: null },
     }))
@@ -325,6 +380,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     set((state) => ({
       dummy: { ...state.dummy, hp: Math.max(0, Math.min(state.dummy.maxHp, hp)) },
     }))
+    if (hp <= 0) {
+      get().checkWin()
+    }
   },
 
   setShowWinOverlay: (showWinOverlay: boolean) => {
@@ -373,6 +431,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const capped = items.length > 60 ? items.slice(items.length - 60) : items
     set({ confetti: capped })
   },
+
+  setMemeFinished: (memeFinished: boolean) => {
+    set({ memeFinished })
+  },
+
+  markMemeFinished: () => {
+    set({ memeFinished: true, showWinOverlay: true })
+  },
 }))
 
 // ==========================================
@@ -385,3 +451,7 @@ export const usePlayer = (id: 1 | 2): Player =>
   useGameStore((state) => state.players[id === 1 ? 0 : 1])
 
 export { useGameStore as useStore }
+
+if (typeof window !== 'undefined') {
+  (window as any).__gameStore = useGameStore
+}
