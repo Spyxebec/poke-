@@ -72,6 +72,9 @@ export interface GameState {
   confetti: ConfettiPiece[]
   projectiles?: any[]
   hitstopUntil: number
+  koFlashUntil: number
+  koStartedAt: number
+  showWinOverlay: boolean
 }
 
 export interface GameActions {
@@ -88,6 +91,7 @@ export interface GameActions {
   addParticles: (items: Particle[]) => void
   setParticles: (items: Particle[]) => void
   setConfetti: (items: ConfettiPiece[]) => void
+  setShowWinOverlay: (show: boolean) => void
 }
 
 export type GameStore = GameState & GameActions
@@ -114,6 +118,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   confetti: [],
   projectiles: [],
   hitstopUntil: 0,
+  koFlashUntil: 0,
+  koStartedAt: 0,
+  showWinOverlay: false,
 
   // Actions
   startBattle: () => {
@@ -236,7 +243,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
           })
         }
 
-        return { phase: 'GAME_OVER', winner, confetti }
+        setTimeout(() => {
+          set({ showWinOverlay: true })
+        }, 600)
+
+        return {
+          phase: 'GAME_OVER',
+          winner,
+          confetti,
+          koStartedAt: now,
+          koFlashUntil: now + 400,
+          showWinOverlay: false,
+        }
       }
       return {}
     })
@@ -254,7 +272,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
       confetti: [],
       projectiles: [],
       hitstopUntil: 0,
+      koFlashUntil: 0,
+      koStartedAt: 0,
+      showWinOverlay: false,
     })
+  },
+
+  setShowWinOverlay: (showWinOverlay: boolean) => {
+    set({ showWinOverlay })
   },
 
   addFloatingText: (item: FloatingTextItem) => {

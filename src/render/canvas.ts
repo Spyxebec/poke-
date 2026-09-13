@@ -665,6 +665,69 @@ export function renderCanvas({
   }
   lastConfettiTime = now
 
+  // ──────────────────────────────────────────
+  // K.O. screen flash + zoom punch
+  // ──────────────────────────────────────────
+  const { phase, koStartedAt } = useGameStore.getState()
+  if (phase === 'GAME_OVER' && koStartedAt > 0) {
+    const elapsed = now - koStartedAt
+
+    // 1. Zoom punch (0-400ms)
+    if (elapsed < 400) {
+      const t = elapsed / 400
+      const zoom = 1.0 + 0.08 * Math.sin(t * Math.PI)
+      ctx.save()
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.scale(zoom, zoom)
+      ctx.translate(-canvas.width / 2, -canvas.height / 2)
+      // Note: the zoom is applied BEFORE the K.O. text so it also zooms
+      ctx.restore()
+      // To actually apply, re-draw the K.O. text inside the zoom transform
+    }
+
+    // 2. White flash (0-200ms)
+    if (elapsed < 200) {
+      const alpha = 1 - elapsed / 200
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.7})`
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+    }
+
+    // 3. K.O. text (0-600ms)
+    if (elapsed < 600) {
+      // Fade in during first 100ms, hold, fade out during last 200ms
+      let alpha: number
+      if (elapsed < 100) alpha = elapsed / 100
+      else if (elapsed < 400) alpha = 1
+      else alpha = 1 - (elapsed - 400) / 200
+
+      const zoom =
+        elapsed < 400 ? 1.0 + 0.08 * Math.sin((elapsed / 400) * Math.PI) : 1.0
+
+      ctx.save()
+      ctx.globalAlpha = Math.max(0, alpha)
+
+      // Apply zoom transform
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.scale(zoom, zoom)
+      ctx.translate(-canvas.width / 2, -canvas.height / 2)
+
+      // Draw K.O. text
+      ctx.font = 'bold 120px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.lineWidth = 8
+      ctx.strokeStyle = '#000000'
+      ctx.strokeText('K.O.', canvas.width / 2, canvas.height / 2)
+      ctx.fillStyle = '#ff3030'
+      ctx.fillText('K.O.', canvas.width / 2, canvas.height / 2)
+
+      ctx.restore()
+    }
+
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'alphabetic'
+  }
+
   // Reset transform to identity
   ctx.setTransform(1, 0, 0, 1, 0, 0)
 }

@@ -1,7 +1,8 @@
-import { detectGesture } from '../vision/gestures'
+import { detectGesture, detectPeaceSign } from '../vision/gestures'
+import { latestHandResult } from '../vision/hands'
 import { MOVES } from './moves'
 import { useGameStore } from './state'
-import type { MoveId, Phase, Particle } from './state'
+import type { MoveId, Phase, Particle, Player } from './state'
 import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
@@ -54,6 +55,26 @@ export const gestureTrackers: Record<1 | 2, PlayerGestureTracker> = {
 }
 
 /**
+ * Charging state (peace sign gesture)
+ */
+export const chargingSince: Record<1 | 2, number> = {
+  1: 0,
+  2: 0,
+}
+
+export const chargingUntil: Record<1 | 2, number> = {
+  1: 0,
+  2: 0,
+}
+
+export const hasShownChargingText: Record<1 | 2, boolean> = {
+  1: false,
+  2: false,
+}
+
+let lastStaminaUpdateAt = 0
+
+/**
  * Information when each player last fired a move (for top-corner flash).
  */
 export const lastFireAt: Record<1 | 2, LastFireInfo | null> = {
@@ -85,6 +106,13 @@ export function resetGestureTracking(): void {
   lastFireAt[1] = null
   lastFireAt[2] = null
   projectiles.length = 0
+  chargingSince[1] = 0
+  chargingSince[2] = 0
+  chargingUntil[1] = 0
+  chargingUntil[2] = 0
+  hasShownChargingText[1] = false
+  hasShownChargingText[2] = false
+  lastStaminaUpdateAt = 0
 }
 
 // Reset gesture tracking and projectiles on restart
@@ -217,6 +245,129 @@ export function gameLoop(
   for (const player of players) {
     const id = player.playerId
     presentIds.add(id)
+
+    // ── CHARGE: Peace sign hand detection ──
+    let chargingInputActive = false
+
+    // Step D: Guard against missing hands / pose landmarks
+    // If a hand is visible but pose landmarks for that player are missing, ignore hand
+    const hasValidPose = Boolean(player.landmarks && player.landmarks.length >= 33)
+    if (hasValidPose && latestHandResult?.landmarks && latestHandResult.landmarks.length > 0) {
+      for (const hand of latestHandResult.landmarks) {
+        if (!hand || hand.length < 21) continue
+        const wrist = hand[0]
+        if (!wrist) continue
+        // Wrist position: wrist.x < 0.5 -> P1, else P2
+        const handPlayerId: 1 | 2 = wrist.x < 0.5 ? 1 : 2
+        if (handPlayerId === id) {
+          if (detectPeaceSign(hand)) {
+            chargingInputActive = true
+            break
+          }
+        }
+      }
+    }
+
+    if (chargingInputActive) {
+      if (chargingSince[id] === 0) {
+        chargingSince[id] = now
+      }
+
+      const elapsed = now - chargingSince[id]
+      // Max 5 seconds of charge per activation (1000ms delay + 5000ms charge = 6000ms total)
+      if (elapsed >= 1000 && elapsed <= 6000) {
+        chargingUntil[id] = now + 100
+
+        if (!hasShownChargingText[id]) {
+          hasShownChargingText[id] = true
+          const lm = player.landmarks
+          const shoulder11 = lm[11]
+          const shoulder12 = lm[12]
+          const chestX =
+            shoulder11 && shoulder12
+              ? (shoulder11.x + shoulder12.x) / 2
+              : id === 1
+                ? 0.35
+                : 0.65
+          const chestY =
+            shoulder11 && shoulder12
+              ? (shoulder11.y + shoulder12.y) / 2
+              : 0.4
+
+          store.addFloatingText({
+            text: `P${id} CHARGING!`,
+            x: chestX,
+            y: chestY - 0.10,
+            bornAt: now,
+            color: '#eab308',
+            fontSize: 24,
+            durationMs: 1200,
+            driftPx: 40,
+          })
+        }
+      } else if (elapsed > 6000) {
+        chargingUntil[id] = 0
+      }
+    } else {
+      chargingSince[id] = 0
+      chargingUntil[id] = 0
+      hasShownChargingText[id] = false
+    }
+
+    const isCharging = now < chargingUntil[id]
+
+    // Stamina regen: 4x while charging (20/sec), base 5/sec
+    const dt =
+      lastStaminaUpdateAt === 0
+        ? 16
+        : Math.min(100, Math.max(0, now - lastStaminaUpdateAt))
+    const currentStamina = store.players[id - 1]?.stamina ?? 100
+    const regenRate = isCharging ? 20 : 5 // 4x stamina regen while charging
+    const newStamina = Math.min(100, currentStamina + (regenRate * dt) / 1000)
+    if (newStamina !== currentStamina) {
+      useGameStore.setState((state) => ({
+        players: state.players.map((p) =>
+          p.id === id ? { ...p, stamina: newStamina } : p
+        ) as [Player, Player],
+      }))
+    }
+
+    // Aura VFX (particles rising from chest)
+    if (isCharging) {
+      const lm = player.landmarks
+      const shoulder11 = lm[11]
+      const shoulder12 = lm[12]
+      const chestX =
+        shoulder11 && shoulder12
+          ? (shoulder11.x + shoulder12.x) / 2
+          : id === 1
+            ? 0.35
+            : 0.65
+      const chestY =
+        shoulder11 && shoulder12
+          ? (shoulder11.y + shoulder12.y) / 2
+          : 0.4
+
+      store.addParticles([
+        {
+          x: chestX + (Math.random() - 0.5) * 0.15,
+          y: chestY + 0.05 + (Math.random() - 0.5) * 0.15,
+          vx: (Math.random() - 0.5) * 0.1,
+          vy: -0.4 - Math.random() * 0.2,
+          bornAt: now,
+          lifeMs: 400,
+          color: '#fbbf24',
+        },
+      ])
+
+      // Cannot fire other moves while charging
+      const tracker = gestureTrackers[id]
+      tracker.activeGesture = null
+      tracker.handIndex = null
+      tracker.gestureStartedAt = null
+      tracker.hasFired = false
+      continue
+    }
 
     const tracker = gestureTrackers[id]
     const detected = detectGesture(player.landmarks, id)
@@ -354,6 +505,8 @@ export function gameLoop(
     }
   }
 
+  lastStaminaUpdateAt = now
+
   // Reset tracking if an assigned player is absent
   for (const id of [1, 2] as const) {
     if (!presentIds.has(id)) {
@@ -364,6 +517,9 @@ export function gameLoop(
         tracker.gestureStartedAt = null
         tracker.hasFired = false
       }
+      chargingSince[id] = 0
+      chargingUntil[id] = 0
+      hasShownChargingText[id] = false
     }
   }
   } finally {

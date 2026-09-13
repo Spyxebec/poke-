@@ -157,3 +157,57 @@ export function detectGesture(
 
   return null
 }
+
+/**
+ * Detects if hand landmarks form a peace sign (V-sign).
+ *
+ * HandLandmarker gives 21 landmarks per hand:
+ *  0  = wrist
+ *  6  = index PIP,  8  = index tip
+ *  10 = middle PIP, 12 = middle tip
+ *  14 = ring PIP,   16 = ring tip
+ *  18 = pinky PIP,  20 = pinky tip
+ *
+ * Y increases downward. A finger is "up" when its TIP is above its PIP.
+ * A finger is UP only if lm[tip].y < lm[pip].y - 0.02
+ * A finger is DOWN only if lm[tip].y > lm[pip].y + 0.02
+ */
+export function detectPeaceSign(
+  handLandmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null
+): boolean {
+  try {
+    if (!handLandmarks || handLandmarks.length < 21) {
+      return false
+    }
+
+    const indexTip = handLandmarks[8]
+    const indexPip = handLandmarks[6]
+    const middleTip = handLandmarks[12]
+    const middlePip = handLandmarks[10]
+    const ringTip = handLandmarks[16]
+    const ringPip = handLandmarks[14]
+    const pinkyTip = handLandmarks[20]
+    const pinkyPip = handLandmarks[18]
+
+    if (
+      !indexTip || !indexPip ||
+      !middleTip || !middlePip ||
+      !ringTip || !ringPip ||
+      !pinkyTip || !pinkyPip
+    ) {
+      return false
+    }
+
+    const indexUp = indexTip.y < indexPip.y - 0.02
+    const middleUp = middleTip.y < middlePip.y - 0.02
+    const ringUp = ringTip.y < ringPip.y - 0.02
+    const ringDown = ringTip.y > ringPip.y + 0.02
+    const pinkyUp = pinkyTip.y < pinkyPip.y - 0.02
+    const pinkyDown = pinkyTip.y > pinkyPip.y + 0.02
+
+    return indexUp && middleUp && !ringUp && !pinkyUp && ringDown && pinkyDown
+  } catch {
+    return false
+  }
+}
+

@@ -4,11 +4,12 @@ import { useGameStore } from '../game/state'
 export function HUD() {
   const phase = useGameStore((state) => state.phase)
   const winner = useGameStore((state) => state.winner)
+  const showWinOverlay = useGameStore((state) => state.showWinOverlay)
   const reset = useGameStore((state) => state.reset)
 
   return (
     <AnimatePresence>
-      {phase === 'GAME_OVER' && (
+      {phase === 'GAME_OVER' && showWinOverlay && (
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1.0 }}

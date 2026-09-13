@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useCamera } from '../hooks/useCamera'
 import { usePose, type PoseResult } from '../hooks/usePose'
+import { useHands, latestHandResult, handDetectionInFlight } from '../vision/hands'
 import { usePlayerAssignment } from '../hooks/usePlayerAssignment'
 import { Overlay } from './Overlay'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
@@ -10,6 +11,7 @@ import { useGameStore } from '../game/state'
 // Module-level state for async detection (STEP 1)
 let latestResult: PoseResult | null = null
 let detectionInFlight = false
+let handsInFlight = false
 
 /**
  * Fullscreen mirrored camera feed with pose skeleton overlay
@@ -18,6 +20,7 @@ let detectionInFlight = false
 export function Camera() {
   const { videoRef, status: camStatus, error: camError } = useCamera()
   const { status: poseStatus, error: poseError, detectForVideo } = usePose()
+  const { status: handStatus, detectForVideo: detectHandsForVideo } = useHands()
   const { assign } = usePlayerAssignment()
 
   const rafIdRef = useRef<number>(0)
@@ -61,6 +64,17 @@ export function Camera() {
             })
         }
 
+        if (!handsInFlight && handStatus === 'ready') {
+          handsInFlight = true
+          detectHandsForVideo(vid, performance.now())
+            .then(() => {
+              handsInFlight = false
+            })
+            .catch(() => {
+              handsInFlight = false
+            })
+        }
+
         if (latestResult !== lastProcessedResultRef.current) {
           lastProcessedResultRef.current = latestResult
           latestPlayersRef.current = latestResult ? assign(latestResult) : []
@@ -75,7 +89,7 @@ export function Camera() {
     }
 
     rafIdRef.current = requestAnimationFrame(loop)
-  }, [videoRef, camStatus, poseStatus, detectForVideo, assign])
+  }, [videoRef, camStatus, poseStatus, handStatus, detectForVideo, detectHandsForVideo, assign])
 
   useEffect(() => {
     startLoop()
