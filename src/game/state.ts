@@ -15,6 +15,7 @@ export interface Move {
   name: string
   damage: number // negative = heal
   cooldownMs: number
+  staminaCost: number
   sfx: string
 }
 

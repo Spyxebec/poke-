@@ -15,6 +15,9 @@ export const HAND_MODEL_PATH = '/hand_landmarker.task'
 // Module-level state for async detection
 export let latestHandResult: HandLandmarkerResult | null = null
 export let handDetectionInFlight = false
+export function setLatestHandResult(res: HandLandmarkerResult | null) {
+  latestHandResult = res
+}
 
 /**
  * Detects hand landmarks from video using HandLandmarker.

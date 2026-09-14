@@ -403,6 +403,8 @@ export function renderCanvas({
       const currentX = (p.startX + (p.endX - p.startX) * eased) * vw
       const currentY = (p.startY + (p.endY - p.startY) * eased) * vh
 
+      const trailRadiusScale = p.isLowStamina ? 0.6 : 1.0
+
       for (let ti = 0; ti < FIRE_TRAIL_CONFIG.length; ti++) {
         const item = FIRE_TRAIL_CONFIG[ti]
         const trailT = Math.max(0, t - item.dt)
@@ -411,7 +413,7 @@ export function renderCanvas({
         const trailY = (p.startY + (p.endY - p.startY) * easedTrail) * vh
 
         ctx.beginPath()
-        ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
+        ctx.arc(trailX, trailY, item.radius * trailRadiusScale, 0, Math.PI * 2)
         ctx.fillStyle = item.style
         ctx.fill()
       }
@@ -722,13 +724,15 @@ export function renderCanvas({
   }
 
   // ──────────────────────────────────────────
-  // TRAINING: Feedback panel (top-right, last gesture)
+  // TRAINING: Feedback panel (top-left, last gesture & stamina)
   // ──────────────────────────────────────────
   if (storeState.mode === 'TRAINING' && storeState.phase === 'BATTLE') {
-    const panelX = vw - 170
-    const panelY = 12
-    const panelW = 158
-    const panelH = 58
+    const p1Stamina = storeState.players[0]?.stamina ?? 100
+    const isLowStamina = p1Stamina < 35
+    const panelX = 16
+    const panelY = 50
+    const panelW = isLowStamina ? 210 : 160
+    const panelH = isLowStamina ? 74 : 58
 
     ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
     ctx.strokeStyle = 'rgba(139, 92, 246, 0.5)'
@@ -760,6 +764,12 @@ export function renderCanvas({
     const lastGest = storeState.lastGesture[1] ?? 'None'
     ctx.fillText(`Last: ${lastGest}`, panelX + 10, panelY + 26)
     ctx.fillText(`Dummy: ${Math.round(storeState.dummy.hp)}HP`, panelX + 10, panelY + 40)
+
+    if (isLowStamina) {
+      ctx.font = 'bold 10px sans-serif, "Segoe UI Emoji"'
+      ctx.fillStyle = p1Stamina < 15 ? '#ef4444' : '#eab308'
+      ctx.fillText('LOW STAMINA — hold ✌ to charge', panelX + 10, panelY + 56)
+    }
 
     ctx.textAlign = 'left'
     ctx.textBaseline = 'alphabetic'

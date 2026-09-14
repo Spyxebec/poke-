@@ -29,6 +29,7 @@ export interface Projectile {
   endY: number
   bornAt: number
   durationMs: number
+  isLowStamina?: boolean
 }
 
 export interface LastFireInfo {
@@ -407,13 +408,13 @@ export function gameLoop(
 
     const isCharging = now < chargingUntil[id]
 
-    // Stamina regen: 4x while charging (20/sec), base 5/sec
+    // Stamina regen: 20/sec while charging, base 3/sec
     const dt =
       lastStaminaUpdateAt === 0
         ? 16
         : Math.min(100, Math.max(0, now - lastStaminaUpdateAt))
     const currentStamina = store.players[id - 1]?.stamina ?? 100
-    const regenRate = isCharging ? 20 : 5 // 4x stamina regen while charging
+    const regenRate = isCharging ? 20 : 3
     const newStamina = Math.min(100, currentStamina + (regenRate * dt) / 1000)
     if (newStamina !== currentStamina) {
       useGameStore.setState((state) => ({
@@ -494,6 +495,52 @@ export function gameLoop(
       ) {
         const moveId = detected.move
         const move = MOVES[moveId]
+        const currentStamina = storePlayer?.stamina ?? 100
+
+        // Stamina check: fails silently + shows "NO STAMINA" floating text if stamina < move.staminaCost
+        if (currentStamina < move.staminaCost) {
+          tracker.hasFired = true
+          const lm = player.landmarks
+          const shoulder11 = lm[11]
+          const shoulder12 = lm[12]
+          const chestX =
+            shoulder11 && shoulder12
+              ? (shoulder11.x + shoulder12.x) / 2
+              : id === 1
+                ? 0.35
+                : 0.65
+          const chestY =
+            shoulder11 && shoulder12
+              ? (shoulder11.y + shoulder12.y) / 2
+              : 0.4
+
+          store.addFloatingText({
+            text: 'NO STAMINA',
+            x: chestX,
+            y: chestY - 0.1,
+            bornAt: now,
+            color: '#ef4444',
+            fontSize: 20,
+            durationMs: 800,
+            driftPx: 30,
+          })
+          continue
+        }
+
+        // Deduct stamina cost BEFORE projectile spawns
+        const newPlayerStamina = Math.max(0, currentStamina - move.staminaCost)
+        useGameStore.setState((state) => ({
+          players: state.players.map((p) =>
+            p.id === id ? { ...p, stamina: newPlayerStamina } : p
+          ) as [Player, Player],
+        }))
+
+        // Soft cost for firing FIRE while stamina is between 20 and 40:
+        // do NOT block, but projectile speed is reduced by 20% and trail is thinner
+        const isLowStamina =
+          moveId === 'FIRE' && currentStamina >= 20 && currentStamina <= 40
+        const fireDurationMs = isLowStamina ? 625 : 500
+
         const moveName = MOVES[moveId].name.toUpperCase()
         console.log(`P${id} used ${moveId}!`)
         playSfx(move.id.toLowerCase() as any)
@@ -542,7 +589,8 @@ export function gameLoop(
               endX: store.dummy.anchorX,
               endY: store.dummy.anchorY,
               bornAt: now,
-              durationMs: 500,
+              durationMs: fireDurationMs,
+              isLowStamina,
             })
           } else if (
             opponent &&
@@ -561,7 +609,8 @@ export function gameLoop(
               endX: (opp11.x + opp12.x) / 2,
               endY: (opp11.y + opp12.y) / 2,
               bornAt: now,
-              durationMs: 500,
+              durationMs: fireDurationMs,
+              isLowStamina,
             })
           } else {
             // No opponent detected: set cooldown on fire so player doesn't spam

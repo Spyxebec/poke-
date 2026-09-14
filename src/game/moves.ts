@@ -9,6 +9,7 @@ export const MOVES: Record<MoveId, Move> = {
     name: 'Fire',
     damage: 15,
     cooldownMs: 2000,
+    staminaCost: 20,
     sfx: '/sfx/fire.mp3',
   },
   TACKLE: {
@@ -16,6 +17,7 @@ export const MOVES: Record<MoveId, Move> = {
     name: 'Tackle',
     damage: 10,
     cooldownMs: 1000,
+    staminaCost: 12,
     sfx: '/sfx/tackle.mp3',
   },
   BLOCK: {
@@ -23,6 +25,7 @@ export const MOVES: Record<MoveId, Move> = {
     name: 'Block',
     damage: 0,
     cooldownMs: 3000,
+    staminaCost: 25,
     sfx: '/sfx/block.mp3',
   },
   HEAL: {
@@ -30,6 +33,7 @@ export const MOVES: Record<MoveId, Move> = {
     name: 'Heal',
     damage: -10,
     cooldownMs: 5000,
+    staminaCost: 35,
     sfx: '/sfx/heal.mp3',
   },
 } as const
