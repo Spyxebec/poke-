@@ -48,7 +48,7 @@ export const PLAYER_NAMES: Record<1 | 2, string> = {
 
 export const MOVE_NAMES: Record<MoveId, string> = {
   FIRE: 'Fire',
-  TACKLE: 'Tackle',
+  PUNCH: 'Punch',
   BLOCK: 'Block',
   HEAL: 'Heal',
 }
@@ -56,13 +56,13 @@ export const MOVE_NAMES: Record<MoveId, string> = {
 export const MOVE_FLASH_TEXT: Record<1 | 2, Record<MoveId, string>> = {
   1: {
     FIRE: 'P1 FIRE!',
-    TACKLE: 'P1 TACKLE!',
+    PUNCH: 'P1 PUNCH!',
     BLOCK: 'P1 BLOCK!',
     HEAL: 'P1 HEAL!',
   },
   2: {
     FIRE: 'P2 FIRE!',
-    TACKLE: 'P2 TACKLE!',
+    PUNCH: 'P2 PUNCH!',
     BLOCK: 'P2 BLOCK!',
     HEAL: 'P2 HEAL!',
   },
@@ -82,10 +82,9 @@ const FIRE_TRAIL_CONFIG = [
   { dt: 0.16, radius: 3, style: 'rgba(255, 120, 0, 0.12)' },
 ] as const
 
-const TACKLE_TRAIL_CONFIG = [
-  { dt: 0.04, radius: 9, style: 'rgba(239, 68, 68, 0.6)' },
-  { dt: 0.08, radius: 5, style: 'rgba(239, 68, 68, 0.3)' },
-] as const
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t
+}
 
 const reusableActiveEntries: FloatingTextItem[] = []
 const reusableActiveParticles: Particle[] = []
@@ -139,7 +138,7 @@ function easeProjectile(rawT: number): number {
  * Draws the entire canvas scene per frame with performance optimizations:
  * 1. Skeleton (faint white)
  * 2. HP bars (smoothed, rounded, color-coded, with labels)
- * 3. Projectiles + trails (FIRE, TACKLE, BLOCK, HEAL)
+ * 3. Projectiles + trails (FIRE, BLOCK, HEAL) & Punch dash + impact
  * 4. Move flash text ("P{id} {MOVE}!")
  * 5. Floating text
  * 6. Particle bursts & victory confetti
@@ -202,6 +201,19 @@ export function renderCanvas({
     if (!player || !player.landmarks || player.landmarks.length < 33) continue
     const id = player.playerId
     const lm = player.landmarks
+    const fireInfo = lastFireAt[id]
+
+    // STEP B: Punch dash - lunge forward +0.04 normalized x for 120ms, easing back during 0-150ms
+    let dashOffsetX = 0
+    if (fireInfo && fireInfo.move === 'PUNCH') {
+      const elapsed = now - fireInfo.timestamp
+      if (elapsed >= 0 && elapsed <= 150) {
+        const dir = id === 1 ? 1 : -1
+        const t = elapsed / 150
+        const factor = t <= 0.8 ? lerp(0, 1, t / 0.8) : lerp(1, 0, (t - 0.8) / 0.2)
+        dashOffsetX = dir * 0.04 * factor
+      }
+    }
 
     // STEP C: Hit flash on skeleton
     if (now < (id === 1 ? hitFlash1 : hitFlash2)) {
@@ -221,8 +233,8 @@ export function renderCanvas({
       if (to.visibility !== undefined && to.visibility < 0.3) continue
 
       ctx.beginPath()
-      ctx.moveTo(from.x * vw, from.y * vh)
-      ctx.lineTo(to.x * vw, to.y * vh)
+      ctx.moveTo((from.x + dashOffsetX) * vw, from.y * vh)
+      ctx.lineTo((to.x + dashOffsetX) * vw, to.y * vh)
       ctx.stroke()
     }
 
@@ -233,7 +245,7 @@ export function renderCanvas({
       if (!landmark) continue
       if (landmark.visibility !== undefined && landmark.visibility < 0.3) continue
       ctx.beginPath()
-      ctx.arc(landmark.x * vw, landmark.y * vh, 2.5, 0, Math.PI * 2)
+      ctx.arc((landmark.x + dashOffsetX) * vw, landmark.y * vh, 2.5, 0, Math.PI * 2)
       ctx.fill()
     }
   }
@@ -439,31 +451,6 @@ export function renderCanvas({
       ctx.fillStyle = grad
       ctx.fill()
       ctx.shadowBlur = 0
-    } else if (p.moveId === 'TACKLE') {
-      // ── TACKLE: red circle r=14, short trail, faster (300ms) ──
-      const currentX = (p.startX + (p.endX - p.startX) * eased) * vw
-      const currentY = (p.startY + (p.endY - p.startY) * eased) * vh
-
-      for (let ti = 0; ti < TACKLE_TRAIL_CONFIG.length; ti++) {
-        const item = TACKLE_TRAIL_CONFIG[ti]
-        const trailT = Math.max(0, t - item.dt)
-        const easedTrail = easeProjectile(trailT)
-        const trailX = (p.startX + (p.endX - p.startX) * easedTrail) * vw
-        const trailY = (p.startY + (p.endY - p.startY) * easedTrail) * vh
-
-        ctx.beginPath()
-        ctx.arc(trailX, trailY, item.radius, 0, Math.PI * 2)
-        ctx.fillStyle = item.style
-        ctx.fill()
-      }
-
-      ctx.shadowColor = '#ef4444'
-      ctx.shadowBlur = 20
-      ctx.beginPath()
-      ctx.arc(currentX, currentY, 14, 0, Math.PI * 2)
-      ctx.fillStyle = '#dc2626'
-      ctx.fill()
-      ctx.shadowBlur = 0
     } else if (p.moveId === 'BLOCK') {
       // ── BLOCK: blue ring expanding + fading at firing player's chest (400ms) ──
       const alpha = Math.max(0, 1 - t)
@@ -566,6 +553,34 @@ export function renderCanvas({
 
   if (activeEntries.length !== floatingEntries.length) {
     useGameStore.getState().setFloatingText([...activeEntries])
+  }
+
+  // ──────────────────────────────────────────
+  // PUNCH IMPACT: Radial white flash (expanding ring, 300ms, alpha 1 -> 0)
+  // ──────────────────────────────────────────
+  const punchImpacts = useGameStore.getState().punchImpacts
+  if (punchImpacts && punchImpacts.length > 0) {
+    for (let i = 0; i < punchImpacts.length; i++) {
+      const imp = punchImpacts[i]
+      const elapsed = now - imp.bornAt
+      if (elapsed >= 0 && elapsed < 300) {
+        const t = elapsed / 300
+        const alpha = Math.max(0, 1 - t)
+        const radius = 10 + 60 * t
+        const cx = imp.x * vw
+        const cy = imp.y * vh
+
+        ctx.save()
+        ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`
+        ctx.lineWidth = 4 * (1 - t * 0.5)
+        ctx.shadowColor = '#ffffff'
+        ctx.shadowBlur = 15 * alpha
+        ctx.beginPath()
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.restore()
+      }
+    }
   }
 
   // ──────────────────────────────────────────

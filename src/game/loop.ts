@@ -2,7 +2,7 @@ import { detectGesture, detectPeaceSign } from '../vision/gestures'
 import { latestHandResult } from '../vision/hands'
 import { MOVES } from './moves'
 import { useGameStore } from './state'
-import type { MoveId, Phase, Particle, Player, ConfettiPiece } from './state'
+import type { MoveId, Phase, Particle, Player, ConfettiPiece, PendingPunch, PunchImpact } from './state'
 import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
@@ -114,6 +114,10 @@ export function resetGestureTracking(): void {
   hasShownChargingText[1] = false
   hasShownChargingText[2] = false
   lastStaminaUpdateAt = 0
+  useGameStore.setState({
+    pendingPunches: [],
+    punchImpacts: [],
+  })
 }
 
 // Reset gesture tracking and projectiles on restart
@@ -136,7 +140,7 @@ let measurementFrameCount = 0
  *
  * STEP C:
  * - On impact (t >= 1):
- *     FIRE / TACKLE:
+ *     FIRE / PUNCH:
  *       if target.blockUntil > now: no damage, clear target.blockUntil
  *       else: applyDamage(targetId, move.damage)
  *     BLOCK:
@@ -177,7 +181,7 @@ export function gameLoop(
       const targetId: 1 | 2 = p.fromPlayer === 1 ? 2 : 1
       const target = store.players[targetId - 1]
 
-      if (p.moveId === 'FIRE' || p.moveId === 'TACKLE') {
+      if (p.moveId === 'FIRE') {
         // ── TRAINING: Damage dummy instead of opponent ──
         if (store.mode === 'TRAINING') {
           if (p.fromPlayer === 1) {
@@ -261,6 +265,28 @@ export function gameLoop(
           // Block consumed: no damage, clear target block
           store.setBlock(targetId, 0)
           console.log(`[Battle] P${targetId} blocked ${p.moveId} from P${p.fromPlayer}!`)
+          const targetPlayer = players.find((pl) => pl.playerId === targetId)
+          const tLm = targetPlayer?.landmarks
+          const targetShoulderMidX =
+            tLm && tLm[11] && tLm[12]
+              ? (tLm[11].x + tLm[12].x) / 2
+              : targetId === 1
+                ? 0.35
+                : 0.65
+          const targetShoulderMidY =
+            tLm && tLm[11] && tLm[12]
+              ? (tLm[11].y + tLm[12].y) / 2
+              : 0.40
+          store.addFloatingText({
+            text: 'BLOCKED!',
+            x: targetShoulderMidX,
+            y: targetShoulderMidY,
+            bornAt: now,
+            color: '#38bdf8',
+            fontSize: 28,
+            durationMs: 900,
+            driftPx: 30,
+          })
         } else {
           store.applyDamage(targetId, move.damage)
           playSfx('hit')
@@ -325,6 +351,156 @@ export function gameLoop(
       // Remove projectile
       projectiles.splice(i, 1)
     }
+  }
+
+  // ── Pending Punches Impact & Effect Resolution (at 150ms) ──
+  const currentPendingPunches = store.pendingPunches
+  if (currentPendingPunches && currentPendingPunches.length > 0) {
+    const remainingPunches: PendingPunch[] = []
+    const newImpacts: PunchImpact[] = []
+
+    for (let pi = 0; pi < currentPendingPunches.length; pi++) {
+      const punch = currentPendingPunches[pi]
+      if (now >= punch.impactAt) {
+        // Impact reached at 150ms!
+        // 1. Radial white flash visual (expanding ring, 300ms, alpha 1 -> 0)
+        newImpacts.push({
+          x: punch.targetX,
+          y: punch.targetY,
+          bornAt: now,
+        })
+
+        // 2. 6 red particles bursting outward (reuse particle system)
+        const burstParticles: Particle[] = []
+        for (let k = 0; k < 6; k++) {
+          const angle = (Math.PI * 2 * k) / 6 + Math.random() * 0.3
+          const speed = 0.5 + Math.random() * 0.5
+          burstParticles.push({
+            x: punch.targetX,
+            y: punch.targetY,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            bornAt: now,
+            lifeMs: 500,
+            color: '#ef4444',
+          })
+        }
+        store.addParticles(burstParticles)
+
+        // 3. Screen shake for 100ms (reuse existing shake)
+        useGameStore.setState((state) => ({
+          shakeUntil: {
+            ...state.shakeUntil,
+            1: Math.max(state.shakeUntil[1] ?? 0, now + 100),
+            2: Math.max(state.shakeUntil[2] ?? 0, now + 100),
+          },
+        }))
+
+        // 4. Damage applied at this moment (150ms), not at fire time
+        if (store.mode === 'TRAINING') {
+          if (punch.fromPlayer === 1) {
+            const newDummyHp = Math.max(0, store.dummy.hp - MOVES.PUNCH.damage)
+            store.setDummyHp(newDummyHp)
+            playSfx('hit')
+
+            store.addFloatingText({
+              text: `-${MOVES.PUNCH.damage}`,
+              x: punch.targetX,
+              y: punch.targetY,
+              bornAt: now,
+              color: '#ef4444',
+              fontSize: 28,
+              durationMs: 900,
+              driftPx: 30,
+            })
+
+            // If dummy dead: trigger GAME_OVER
+            if (newDummyHp <= 0 && store.phase === 'BATTLE') {
+              console.log('[ko] dummy died, koStartedAt =', now)
+              playSfx('win')
+              const colors = ['#ef4444', '#22c55e', '#eab308', '#3b82f6', '#a855f7', '#f97316']
+              const confetti: ConfettiPiece[] = []
+              for (let ci = 0; ci < 60; ci++) {
+                confetti.push({
+                  x: Math.random(),
+                  y: -0.1,
+                  vy: 0.3 + Math.random() * 0.4,
+                  vx: (Math.random() - 0.5) * 0.2,
+                  rotation: Math.random() * Math.PI * 2,
+                  spin: (Math.random() - 0.5) * 4,
+                  color: colors[Math.floor(Math.random() * colors.length)],
+                  width: 8,
+                  height: 14,
+                  bornAt: now,
+                })
+              }
+              setTimeout(() => {
+                useGameStore.setState({ showWinOverlay: true })
+              }, 600)
+              useGameStore.setState({
+                phase: 'GAME_OVER',
+                winner: 1,
+                confetti,
+                koStartedAt: now,
+                koFlashUntil: now + 400,
+                showWinOverlay: false,
+              })
+            }
+          }
+        } else {
+          // BATTLE mode
+          const targetId: 1 | 2 = punch.fromPlayer === 1 ? 2 : 1
+          const target = store.players[targetId - 1]
+
+          if (target && target.blockUntil > now) {
+            // STEP C: Block interaction - 0 damage, clear blockUntil, show "BLOCKED!" floating text (blue #38bdf8)
+            store.setBlock(targetId, 0)
+            store.addFloatingText({
+              text: 'BLOCKED!',
+              x: punch.targetX,
+              y: punch.targetY,
+              bornAt: now,
+              color: '#38bdf8',
+              fontSize: 28,
+              durationMs: 900,
+              driftPx: 30,
+            })
+          } else {
+            store.applyDamage(targetId, MOVES.PUNCH.damage)
+            playSfx('hit')
+
+            store.addFloatingText({
+              text: `-${MOVES.PUNCH.damage}`,
+              x: punch.targetX,
+              y: punch.targetY,
+              bornAt: now,
+              color: '#ef4444',
+              fontSize: 28,
+              durationMs: 900,
+              driftPx: 30,
+            })
+
+            store.checkWin()
+          }
+        }
+      } else {
+        remainingPunches.push(punch)
+      }
+    }
+
+    if (remainingPunches.length !== currentPendingPunches.length || newImpacts.length > 0) {
+      useGameStore.setState((state) => ({
+        pendingPunches: remainingPunches,
+        punchImpacts: [...state.punchImpacts, ...newImpacts],
+      }))
+    }
+  }
+
+  // Clean up expired punch impacts (older than 300ms)
+  if (store.punchImpacts && store.punchImpacts.some((imp) => now - imp.bornAt >= 300)) {
+    useGameStore.setState((state) => ({
+      punchImpacts: state.punchImpacts.filter((imp) => now - imp.bornAt < 300),
+    }))
   }
 
   // ── Gesture Detection & Firing Check ──
@@ -562,7 +738,7 @@ export function gameLoop(
 
         // STEP A: On move fire, push floating text at shoulder midpoint - 0.10
         store.addFloatingText({
-          text: `P${id} used ${moveName}!`,
+          text: moveId === 'PUNCH' ? 'PUNCH!' : `P${id} used ${moveName}!`,
           x: chestX,
           y: chestY - 0.10,
           bornAt: now,
@@ -616,37 +792,33 @@ export function gameLoop(
             // No opponent detected: set cooldown on fire so player doesn't spam
             store.setCooldown(id, MOVES.FIRE.cooldownMs)
           }
-        } else if (moveId === 'TACKLE') {
-          // In training mode, target the dummy
+        } else if (moveId === 'PUNCH') {
+          // Cooldown starts at fire time
+          store.setCooldown(id, MOVES.PUNCH.cooldownMs)
+
+          let targetX = opponentId === 1 ? 0.35 : 0.65
+          let targetY = 0.40
           if (store.mode === 'TRAINING' && id === 1) {
-            projectiles.push({
-              id: `proj_${id}_${now}_${Math.random().toString(36).substring(2, 7)}`,
-              fromPlayer: id,
-              moveId: 'TACKLE',
-              startX: chestX,
-              startY: chestY,
-              endX: store.dummy.anchorX,
-              endY: store.dummy.anchorY,
-              bornAt: now,
-              durationMs: 300,
-            })
+            targetX = store.dummy.anchorX
+            targetY = store.dummy.anchorY
           } else if (opponent && opponent.landmarks[11] && opponent.landmarks[12]) {
             const opp11 = opponent.landmarks[11]
             const opp12 = opponent.landmarks[12]
-            projectiles.push({
-              id: `proj_${id}_${now}_${Math.random().toString(36).substring(2, 7)}`,
-              fromPlayer: id,
-              moveId: 'TACKLE',
-              startX: chestX,
-              startY: chestY,
-              endX: (opp11.x + opp12.x) / 2,
-              endY: (opp11.y + opp12.y) / 2,
-              bornAt: now,
-              durationMs: 300, // faster (300ms)
-            })
-          } else {
-            store.setCooldown(id, MOVES.TACKLE.cooldownMs)
+            targetX = (opp11.x + opp12.x) / 2
+            targetY = (opp11.y + opp12.y) / 2
           }
+
+          const newPunch: PendingPunch = {
+            id: `punch_${id}_${now}_${Math.random().toString(36).substring(2, 7)}`,
+            fromPlayer: id,
+            impactAt: now + 150,
+            targetX,
+            targetY,
+          }
+
+          useGameStore.setState((state) => ({
+            pendingPunches: [...state.pendingPunches, newPunch],
+          }))
         } else if (moveId === 'BLOCK') {
           // Self-cast expanding blue ring at chest (400ms)
           projectiles.push({

@@ -8,7 +8,21 @@ import { pickRandomMeme } from './memes'
 
 export type Phase = 'IDLE' | 'BATTLE' | 'GAME_OVER'
 
-export type MoveId = 'FIRE' | 'TACKLE' | 'BLOCK' | 'HEAL'
+export type MoveId = 'FIRE' | 'PUNCH' | 'BLOCK' | 'HEAL'
+
+export interface PendingPunch {
+  id: string
+  fromPlayer: 1 | 2
+  impactAt: number // Date.now() + 150
+  targetX: number // opponent's shoulder mid at fire time
+  targetY: number
+}
+
+export interface PunchImpact {
+  x: number
+  y: number
+  bornAt: number
+}
 
 export interface Move {
   id: MoveId
@@ -83,6 +97,8 @@ export interface GameState {
   particles: Particle[]
   confetti: ConfettiPiece[]
   projectiles?: any[]
+  pendingPunches: PendingPunch[]
+  punchImpacts: PunchImpact[]
   hitstopUntil: number
   koFlashUntil: number
   koStartedAt: number
@@ -145,6 +161,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   particles: [],
   confetti: [],
   projectiles: [],
+  pendingPunches: [],
+  punchImpacts: [],
   hitstopUntil: 0,
   koFlashUntil: 0,
   koStartedAt: 0,
@@ -366,6 +384,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       particles: [],
       confetti: [],
       projectiles: [],
+      pendingPunches: [],
+      punchImpacts: [],
       hitstopUntil: 0,
       koFlashUntil: 0,
       koStartedAt: 0,

@@ -12,13 +12,13 @@ export const MOVES: Record<MoveId, Move> = {
     staminaCost: 20,
     sfx: '/sfx/fire.mp3',
   },
-  TACKLE: {
-    id: 'TACKLE',
-    name: 'Tackle',
+  PUNCH: {
+    id: 'PUNCH',
+    name: 'Punch',
     damage: 10,
     cooldownMs: 1000,
     staminaCost: 12,
-    sfx: '/sfx/tackle.mp3',
+    sfx: '/sfx/tackle.mp3', // TODO: rename sfx file to punch.mp3
   },
   BLOCK: {
     id: 'BLOCK',

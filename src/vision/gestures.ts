@@ -22,7 +22,7 @@ export interface DetectedGesture {
 
 /**
  * Detects gestures from pose landmarks following SPEC §8 priority:
- * Priority: BLOCK > HEAL > FIRE > TACKLE.
+ * Priority: BLOCK > HEAL > FIRE > PUNCH.
  *
  * Y increases downward; "above" = smaller Y.
  * shoulderMidX = (lm[11].x + lm[12].x) / 2
@@ -142,17 +142,17 @@ export function detectGesture(
   }
 
   // ──────────────────────────────────────────
-  // 4. TACKLE (Priority 4: both fists pulled in at chest)
+  // 4. PUNCH (Priority 4: both fists pulled in at chest)
   // lm[15].y > shoulderMidY AND lm[15].y < hipMidY
   // lm[16].y > shoulderMidY AND lm[16].y < hipMidY
   // |lm[15].x - shoulderMidX| < 0.20
   // |lm[16].x - shoulderMidX| < 0.20
   // ──────────────────────────────────────────
-  const leftTackleX = Math.abs(leftWrist.x - shoulderMidX) < 0.20
-  const rightTackleX = Math.abs(rightWrist.x - shoulderMidX) < 0.20
+  const leftPunchX = Math.abs(leftWrist.x - shoulderMidX) < 0.20
+  const rightPunchX = Math.abs(rightWrist.x - shoulderMidX) < 0.20
 
-  if (leftInChest && rightInChest && leftTackleX && rightTackleX) {
-    return { move: 'TACKLE' }
+  if (leftInChest && rightInChest && leftPunchX && rightPunchX) {
+    return { move: 'PUNCH' }
   }
 
   return null

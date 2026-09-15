@@ -7,7 +7,7 @@ const createAudio = (src: string): HTMLAudioElement => {
 
 export const AUDIO = {
   fire: createAudio('/sfx/fire.mp3'),
-  tackle: createAudio('/sfx/tackle.mp3'),
+  punch: createAudio('/sfx/tackle.mp3'), // TODO: rename sfx file to punch.mp3
   block: createAudio('/sfx/block.mp3'),
   heal: createAudio('/sfx/heal.mp3'),
   hit: createAudio('/sfx/hit.mp3'),
