@@ -29,8 +29,8 @@ export interface UsePoseResult {
   detectForVideo: (video: HTMLVideoElement, timestampMs: number) => Promise<NormalizedLandmark[][] | undefined>
 }
 
-// Heavy model swapped for higher accuracy.
-export const MODEL_PATH = '/pose_landmarker_heavy.task'
+// Full model swapped for higher accuracy and real-time performance.
+export const MODEL_PATH = '/pose_landmarker_full.task'
 export const WASM_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
 
 /** Visibility threshold below which a landmark is considered missing */
@@ -59,7 +59,6 @@ export function usePose(): UsePoseResult {
   // pass a duplicate or out-of-order value.
   const lastTimestampRef = useRef<number>(-1)
   const lastCallTimeRef = useRef<number>(0)
-  const lastWarnTimeRef = useRef<number>(-10000)
 
   // Load model once on mount
   useEffect(() => {
@@ -75,28 +74,28 @@ export function usePose(): UsePoseResult {
         try {
           landmarker = await PoseLandmarker.createFromOptions(vision, {
             baseOptions: {
-              modelAssetPath: '/pose_landmarker_heavy.task',
+              modelAssetPath: '/pose_landmarker_full.task',
               delegate: 'GPU',
             },
             runningMode: 'VIDEO',
             numPoses: 2,
-            minPoseDetectionConfidence: 0.6,
-            minPosePresenceConfidence: 0.6,
-            minTrackingConfidence: 0.6,
+            minPoseDetectionConfidence: 0.3,
+            minPosePresenceConfidence: 0.3,
+            minTrackingConfidence: 0.3,
           })
           delegate = 'GPU'
         } catch (gpuErr) {
           console.warn('[usePose] GPU delegate failed, falling back to CPU:', gpuErr)
           landmarker = await PoseLandmarker.createFromOptions(vision, {
             baseOptions: {
-              modelAssetPath: '/pose_landmarker_heavy.task',
+              modelAssetPath: '/pose_landmarker_full.task',
               delegate: 'CPU',
             },
             runningMode: 'VIDEO',
             numPoses: 2,
-            minPoseDetectionConfidence: 0.6,
-            minPosePresenceConfidence: 0.6,
-            minTrackingConfidence: 0.6,
+            minPoseDetectionConfidence: 0.3,
+            minPosePresenceConfidence: 0.3,
+            minTrackingConfidence: 0.3,
           })
           delegate = 'CPU'
         }
@@ -110,8 +109,8 @@ export function usePose(): UsePoseResult {
 
         landmarkerRef.current = landmarker
         setStatus('ready')
-        console.log('[pose] model: heavy')
-        console.log('[pose] confidence thresholds updated')
+        console.log('[pose] model: full')
+        console.log('[pose] low-confidence tracking mode')
       } catch (err) {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -147,29 +146,10 @@ export function usePose(): UsePoseResult {
       if (timestampMs <= lastTimestampRef.current) return undefined
       lastTimestampRef.current = timestampMs
 
-      // FPS check: if FPS drops below 15, print a console warning
-      const now = performance.now()
-      const timeForFps = timestampMs > 0 ? timestampMs : now
-      if (lastCallTimeRef.current > 0) {
-        const dt = timeForFps - lastCallTimeRef.current
-        if (dt > 0) {
-          const fps = 1000 / dt
-          if (fps < 15 && now - lastWarnTimeRef.current >= 1000) {
-            console.warn('[pose] heavy model is slow, consider frame skip or reverting')
-            lastWarnTimeRef.current = now
-          }
-        }
-      }
+      const timeForFps = timestampMs > 0 ? timestampMs : performance.now()
       lastCallTimeRef.current = timeForFps
 
-      const t0 = performance.now()
       const result = landmarker.detectForVideo(video, timestampMs)
-      const detectDuration = performance.now() - t0
-
-      if (detectDuration > 66.67 && now - lastWarnTimeRef.current >= 1000) {
-        console.warn('[pose] heavy model is slow, consider frame skip or reverting')
-        lastWarnTimeRef.current = now
-      }
 
       const flippedLandmarks = result.landmarks.map(flipLandmarksX)
 

@@ -8,6 +8,14 @@ export interface LandmarkPoint {
   visibility?: number
 }
 
+export const FIST_NOT_UP_THRESHOLD = 0.02
+export const FIST_MAX_DIST_TO_WRIST = 0.20
+
+export const FINGER_GUN_INDEX_UP_THRESHOLD = 0.02
+export const FINGER_GUN_INDEX_MIN_DIST = 0.15
+export const FINGER_GUN_CURL_NOT_UP_THRESHOLD = 0.02
+export const FINGER_GUN_CURL_MAX_DIST = 0.20
+
 const LEFT_SHOULDER = 11
 const RIGHT_SHOULDER = 12
 const LEFT_WRIST = 15
@@ -21,21 +29,19 @@ export interface DetectedGesture {
 }
 
 /**
- * Detects gestures from pose landmarks following SPEC §8 priority:
+ * Detects gestures following SPEC §8 priority:
  * Priority: BLOCK > HEAL > FIRE > PUNCH.
  *
  * Y increases downward; "above" = smaller Y.
  * shoulderMidX = (lm[11].x + lm[12].x) / 2
  * shoulderMidY = (lm[11].y + lm[12].y) / 2
  * hipMidY      = (lm[23].y + lm[24].y) / 2
- *
- * FIRE rule enforces directionality toward the opponent:
- * - For playerId === 1 (left side): arm extended to the RIGHT (wrist.x > shoulderMidX + 0.20)
- * - For playerId === 2 (right side): arm extended to the LEFT (wrist.x < shoulderMidX - 0.20)
  */
 export function detectGesture(
   landmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null,
-  playerId: 1 | 2
+  playerId: 1 | 2,
+  handLandmarks?: NormalizedLandmark[] | LandmarkPoint[] | null,
+  targetX?: number
 ): DetectedGesture | null {
   if (!landmarks || landmarks.length <= RIGHT_HIP) {
     return null
@@ -96,66 +102,140 @@ export function detectGesture(
   }
 
   // ──────────────────────────────────────────
-  // 3. FIRE (Priority 3: finger gun directed toward opponent)
-  // For playerId === 1: arm extended to the RIGHT
-  //   wrist.x > shoulderMidX + 0.20
-  //   |wrist.y - shoulderMidY| < 0.15
-  // For playerId === 2: arm extended to the LEFT
-  //   wrist.x < shoulderMidX - 0.20
-  //   |wrist.y - shoulderMidY| < 0.15
+  // 3. FIRE & 4. PUNCH (require handLandmarks + armExtended)
   // ──────────────────────────────────────────
-  let leftFire = false
-  let rightFire = false
+  if (handLandmarks) {
+    const effTargetX = targetX ?? (playerId === 1 ? 0.65 : 0.35)
+    const pointingRight = effTargetX > shoulderMidX
 
-  if (playerId === 1) {
-    leftFire =
-      leftWrist.x > shoulderMidX + 0.20 &&
-      Math.abs(leftWrist.y - shoulderMidY) < 0.15
-    rightFire =
-      rightWrist.x > shoulderMidX + 0.20 &&
-      Math.abs(rightWrist.y - shoulderMidY) < 0.15
-  } else {
-    leftFire =
-      leftWrist.x < shoulderMidX - 0.20 &&
-      Math.abs(leftWrist.y - shoulderMidY) < 0.15
-    rightFire =
-      rightWrist.x < shoulderMidX - 0.20 &&
-      Math.abs(rightWrist.y - shoulderMidY) < 0.15
-  }
+    const inRange = (x: number, y: number) =>
+      (pointingRight ? x > shoulderMidX + 0.15 : x < shoulderMidX - 0.15) &&
+      y > shoulderMidY - 0.10 &&
+      y < shoulderMidY + 0.20
 
-  if (leftFire && rightFire) {
-    const handIndex =
-      playerId === 1
-        ? leftWrist.x >= rightWrist.x
-          ? 15
-          : 16
-        : leftWrist.x <= rightWrist.x
-          ? 15
-          : 16
-    return { move: 'FIRE', handIndex }
-  }
-  if (leftFire) {
-    return { move: 'FIRE', handIndex: 15 }
-  }
-  if (rightFire) {
-    return { move: 'FIRE', handIndex: 16 }
-  }
+    const leftExt = inRange(leftWrist.x, leftWrist.y)
+    const rightExt = inRange(rightWrist.x, rightWrist.y)
+    const armExt = leftExt || rightExt
 
-  // ──────────────────────────────────────────
-  // 4. PUNCH (Priority 4: both fists pulled in at chest)
-  // lm[15].y > shoulderMidY AND lm[15].y < hipMidY
-  // lm[16].y > shoulderMidY AND lm[16].y < hipMidY
-  // |lm[15].x - shoulderMidX| < 0.20
-  // |lm[16].x - shoulderMidX| < 0.20
-  // ──────────────────────────────────────────
-  const leftPunchX = Math.abs(leftWrist.x - shoulderMidX) < 0.20
-  const rightPunchX = Math.abs(rightWrist.x - shoulderMidX) < 0.20
-
-  if (leftInChest && rightInChest && leftPunchX && rightPunchX) {
-    return { move: 'PUNCH' }
+    if (armExt) {
+      if (detectFingerGun(handLandmarks)) {
+        const handIndex: 15 | 16 = rightExt && !leftExt ? 16 : 15
+        return { move: 'FIRE', handIndex }
+      }
+      if (detectFist(handLandmarks)) {
+        return { move: 'PUNCH' }
+      }
+    }
   }
 
   return null
+}
+
+/**
+ * Detects if hand landmarks form an open palm (all fingers extended).
+ */
+export function isOpenPalm(
+  handLandmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null
+): boolean {
+  if (!handLandmarks || handLandmarks.length < 21) return false
+  const isExtended = (tipIdx: number, pipIdx: number) => {
+    const tip = handLandmarks[tipIdx]
+    const pip = handLandmarks[pipIdx]
+    if (!tip || !pip) return false
+    return tip.y < pip.y - 0.02
+  }
+  return isExtended(8, 6) && isExtended(12, 10) && isExtended(16, 14) && isExtended(20, 18)
+}
+
+/**
+ * Detects if hand landmarks form a finger-gun (index extended, middle/ring/pinky curled).
+ *
+ * HandLandmarker 21 landmarks:
+ *  0=wrist, 5=index MCP,  6=index PIP,  8=index tip
+ *  9=middle MCP, 10=middle PIP, 12=middle tip
+ * 13=ring MCP,  14=ring PIP,  16=ring tip
+ * 17=pinky MCP, 18=pinky PIP, 20=pinky tip
+ */
+export function detectFingerGun(
+  handLandmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null
+): boolean {
+  if (!handLandmarks || handLandmarks.length < 21) {
+    return false
+  }
+
+  const wrist = handLandmarks[0]
+  const index = handLandmarks[8]
+  const indexPip = handLandmarks[6]
+  if (!wrist || !index || !indexPip) return false
+
+  // Index finger must be extended:
+  //   tip is above PIP and far from wrist
+  const indexUp = index.y < indexPip.y - FINGER_GUN_INDEX_UP_THRESHOLD
+  const dxI = index.x - wrist.x
+  const dyI = index.y - wrist.y
+  const indexDist = Math.sqrt(dxI * dxI + dyI * dyI)
+  const indexExtended = indexUp && indexDist > FINGER_GUN_INDEX_MIN_DIST
+
+  // Middle, ring, pinky must be curled
+  const curled = (tipIdx: number, mcpIdx: number) => {
+    const tip = handLandmarks[tipIdx]
+    const mcp = handLandmarks[mcpIdx]
+    if (!tip || !mcp) return false
+    const notUp = tip.y > mcp.y - FINGER_GUN_CURL_NOT_UP_THRESHOLD
+    const dx = tip.x - wrist.x
+    const dy = tip.y - wrist.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    return notUp && dist < FINGER_GUN_CURL_MAX_DIST
+  }
+
+  return (
+    indexExtended &&
+    curled(12, 9) && // middle
+    curled(16, 13) && // ring
+    curled(20, 17) // pinky
+  )
+}
+
+/**
+ * Detects if hand landmarks form a closed fist.
+ *
+ * HandLandmarker 21 landmarks:
+ *  0=wrist, 5=index MCP, 8=index tip
+ *  9=middle MCP, 12=middle tip
+ * 13=ring MCP, 16=ring tip
+ * 17=pinky MCP, 20=pinky tip
+ * A finger is "curled" when its tip is NOT above its MCP
+ * AND its tip is close to the palm (within FIST_MAX_DIST_TO_WRIST of wrist).
+ */
+export function detectFist(
+  handLandmarks: NormalizedLandmark[] | LandmarkPoint[] | undefined | null
+): boolean {
+  if (!handLandmarks || handLandmarks.length < 21) {
+    return false
+  }
+
+  const wrist = handLandmarks[0]
+  if (!wrist) return false
+
+  const curled = (tipIdx: number, mcpIdx: number) => {
+    const tip = handLandmarks[tipIdx]
+    const mcp = handLandmarks[mcpIdx]
+    if (!tip || !mcp) return false
+    // Not extended above the MCP
+    const notUp = tip.y > mcp.y - FIST_NOT_UP_THRESHOLD
+    // Close to the palm
+    const dx = tip.x - wrist.x
+    const dy = tip.y - wrist.y
+    const distToWrist = Math.sqrt(dx * dx + dy * dy)
+    return notUp && distToWrist < FIST_MAX_DIST_TO_WRIST
+  }
+
+  return (
+    curled(8, 5) && // index
+    curled(12, 9) && // middle
+    curled(16, 13) && // ring
+    curled(20, 17) // pinky
+  )
 }
 
 /**

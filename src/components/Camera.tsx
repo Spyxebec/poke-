@@ -1,14 +1,15 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useCamera } from '../hooks/useCamera'
 import { usePose, type PoseResult } from '../hooks/usePose'
-import { useHands, latestHandResult, handDetectionInFlight } from '../vision/hands'
+import { useHands } from '../vision/hands'
 import { usePlayerAssignment } from '../hooks/usePlayerAssignment'
 import { Overlay } from './Overlay'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
-import { gameLoop, lastFireAt } from '../game/loop'
+import { gameLoop, lastFireAt, projectiles } from '../game/loop'
 import { useGameStore } from '../game/state'
+import { renderCanvas } from '../render/canvas'
 
-// Module-level state for async detection (STEP 1)
+// Module-level state for async detection
 let latestResult: PoseResult | null = null
 let detectionInFlight = false
 let handsInFlight = false
@@ -25,14 +26,41 @@ export function Camera() {
 
   const rafIdRef = useRef<number>(0)
   const [videoReady, setVideoReady] = useState(false)
-  const [players, setPlayers] = useState<PlayerAssignment[]>([])
-  const latestPlayersRef = useRef<PlayerAssignment[]>([])
-  const lastProcessedResultRef = useRef<PoseResult | null>(null)
+  const [presence, setPresence] = useState<{ p1: boolean; p2: boolean }>({ p1: false, p2: false })
+  const presenceRef = useRef<{ p1: boolean; p2: boolean }>({ p1: false, p2: false })
+  const playersRef = useRef<PlayerAssignment[]>([])
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   // Start the detection loop once both camera and model are ready
   const startLoop = useCallback(() => {
     const video = videoRef.current
     if (!video || camStatus !== 'active' || poseStatus !== 'ready') return
+
+    function renderCurrentFrame(vid: HTMLVideoElement) {
+      const canvas = canvasRef.current
+      if (!canvas || !vid.videoWidth || !vid.videoHeight) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+
+      if (canvas.width !== vid.videoWidth || canvas.height !== vid.videoHeight) {
+        canvas.width = vid.videoWidth
+        canvas.height = vid.videoHeight
+        canvas.style.width = '100%'
+        canvas.style.height = '100%'
+        ctx.textBaseline = 'middle'
+        ctx.textAlign = 'center'
+      }
+
+      renderCanvas({
+        ctx,
+        vw: vid.videoWidth,
+        vh: vid.videoHeight,
+        players: playersRef.current,
+        projectiles,
+        lastFireAt,
+        now: Date.now(),
+      })
+    }
 
     function loop() {
       const vid = videoRef.current
@@ -42,12 +70,11 @@ export function Camera() {
 
         if (Date.now() < hitstopUntil) {
           // Hitstop on damage:
-          // skip pose detection inference this frame (still render everything
-          // at last known positions)
-          if (latestPlayersRef.current.length > 0) {
-            gameLoop(latestPlayersRef.current, now)
-            setPlayers([...latestPlayersRef.current])
+          // skip pose detection inference this frame (still render everything at last known positions)
+          if (playersRef.current.length > 0) {
+            gameLoop(playersRef.current, now)
           }
+          renderCurrentFrame(vid)
           rafIdRef.current = requestAnimationFrame(loop)
           return
         }
@@ -75,14 +102,21 @@ export function Camera() {
             })
         }
 
-        if (latestResult !== lastProcessedResultRef.current) {
-          lastProcessedResultRef.current = latestResult
-          latestPlayersRef.current = latestResult ? assign(latestResult) : []
+        // Sticky player assignment with 1000ms visual hold
+        const assigned = assign(latestResult ?? [])
+        playersRef.current = assigned
+
+        // Only update discrete presence state when player presence actually changes
+        const hasP1 = assigned.some((p) => p.playerId === 1)
+        const hasP2 = assigned.some((p) => p.playerId === 2)
+        if (hasP1 !== presenceRef.current.p1 || hasP2 !== presenceRef.current.p2) {
+          presenceRef.current = { p1: hasP1, p2: hasP2 }
+          setPresence({ p1: hasP1, p2: hasP2 })
         }
 
-        // ALWAYS render with latestResult (even if null)
-        gameLoop(latestPlayersRef.current, now)
-        setPlayers([...latestPlayersRef.current])
+        // Step simulation & directly render canvas without React re-render
+        gameLoop(playersRef.current, now)
+        renderCurrentFrame(vid)
       }
 
       rafIdRef.current = requestAnimationFrame(loop)
@@ -107,16 +141,18 @@ export function Camera() {
 
     function onPlaying() {
       setVideoReady(true)
-      if (video.videoWidth && video.videoHeight) {
-        console.log(`[camera] ${video.videoWidth}x${video.videoHeight}`)
+      const v = videoRef.current
+      if (v && v.videoWidth && v.videoHeight) {
+        console.log(`[camera] ${v.videoWidth}x${v.videoHeight}`)
       }
     }
 
     video.addEventListener('playing', onPlaying)
     if (!video.paused && video.readyState >= 2) {
       setVideoReady(true)
-      if (video.videoWidth && video.videoHeight) {
-        console.log(`[camera] ${video.videoWidth}x${video.videoHeight}`)
+      const v = videoRef.current
+      if (v && v.videoWidth && v.videoHeight) {
+        console.log(`[camera] ${v.videoWidth}x${v.videoHeight}`)
       }
     }
 
@@ -127,10 +163,6 @@ export function Camera() {
 
   // Combine errors for display
   const errorMsg = camError || poseError
-
-  // Derive display info for the badge
-  const p1 = players.find(p => p.playerId === 1)
-  const p2 = players.find(p => p.playerId === 2)
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden">
@@ -147,13 +179,7 @@ export function Camera() {
       />
 
       {/* Skeleton overlay canvas with player labels and visual indicators */}
-      {videoReady && (
-        <Overlay
-          videoEl={videoRef.current}
-          players={players}
-          lastFireAt={lastFireAt}
-        />
-      )}
+      {videoReady && <Overlay canvasRef={canvasRef} />}
 
       {/* Model loading indicator */}
       {camStatus === 'active' && poseStatus === 'loading' && (
@@ -165,18 +191,18 @@ export function Camera() {
         </div>
       )}
 
-      {/* Player status badges */}
+      {/* Player status badges (updates only on discrete connection/disconnection) */}
       {camStatus === 'active' && poseStatus === 'ready' && (
         <div className="absolute top-4 right-4 flex flex-col gap-1.5">
           <div className={`rounded-full px-3 py-1.5 backdrop-blur-sm text-xs font-mono ${
-            p1 ? 'bg-cyan-500/20 text-cyan-300' : 'bg-black/50 text-white/30'
+            presence.p1 ? 'bg-cyan-500/20 text-cyan-300' : 'bg-black/50 text-white/30'
           }`}>
-            P1: {p1 ? '●' : '—'}
+            P1: {presence.p1 ? '●' : '—'}
           </div>
           <div className={`rounded-full px-3 py-1.5 backdrop-blur-sm text-xs font-mono ${
-            p2 ? 'bg-amber-500/20 text-amber-300' : 'bg-black/50 text-white/30'
+            presence.p2 ? 'bg-amber-500/20 text-amber-300' : 'bg-black/50 text-white/30'
           }`}>
-            P2: {p2 ? '●' : '—'}
+            P2: {presence.p2 ? '●' : '—'}
           </div>
         </div>
       )}

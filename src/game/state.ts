@@ -2,6 +2,16 @@ import { create } from 'zustand'
 import { playSfx } from './audio'
 import { pickRandomMeme } from './memes'
 
+const resetCallbacks: (() => void)[] = []
+
+export function registerResetCallback(cb: () => void): () => void {
+  resetCallbacks.push(cb)
+  return () => {
+    const idx = resetCallbacks.indexOf(cb)
+    if (idx !== -1) resetCallbacks.splice(idx, 1)
+  }
+}
+
 // ==========================================
 // SPEC §6: Data Models
 // ==========================================
@@ -373,6 +383,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   reset: () => {
+    resetCallbacks.forEach((cb) => {
+      try {
+        cb()
+      } catch (err) {
+        console.error('[resetCallback] Error:', err)
+      }
+    })
     set((state) => ({
       phase: 'BATTLE',
       // mode unchanged — stays TRAINING if it was TRAINING

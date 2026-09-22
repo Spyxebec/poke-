@@ -1,8 +1,8 @@
-import { detectGesture, detectPeaceSign } from '../vision/gestures'
+import { detectGesture, detectPeaceSign, detectFist, detectFingerGun } from '../vision/gestures'
 import { latestHandResult } from '../vision/hands'
 import { MOVES } from './moves'
-import { useGameStore } from './state'
-import type { MoveId, Phase, Particle, Player, ConfettiPiece, PendingPunch, PunchImpact } from './state'
+import { useGameStore, registerResetCallback } from './state'
+import type { MoveId, Particle, Player, ConfettiPiece, PendingPunch, PunchImpact } from './state'
 import { playSfx } from './audio'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 import type { LandmarkPoint } from '../vision/gestures'
@@ -74,6 +74,11 @@ export const hasShownChargingText: Record<1 | 2, boolean> = {
 }
 
 let lastStaminaUpdateAt = 0
+let lastStaminaStoreFlushAt = 0
+export const playerStamina: Record<1 | 2, number> = {
+  1: 100,
+  2: 100,
+}
 
 /**
  * Information when each player last fired a move (for top-corner flash).
@@ -114,11 +119,19 @@ export function resetGestureTracking(): void {
   hasShownChargingText[1] = false
   hasShownChargingText[2] = false
   lastStaminaUpdateAt = 0
+  lastStaminaStoreFlushAt = 0
+  playerStamina[1] = 100
+  playerStamina[2] = 100
   useGameStore.setState({
     pendingPunches: [],
     punchImpacts: [],
   })
 }
+
+// Register reset callback
+registerResetCallback(() => {
+  resetGestureTracking()
+})
 
 // Reset gesture tracking and projectiles on restart
 useGameStore.subscribe((state, prevState) => {
@@ -132,8 +145,6 @@ declare global {
     __lastFrameMs?: number
   }
 }
-
-let measurementFrameCount = 0
 
 /**
  * Game loop step for gesture detection, projectile impacts, move effects, and cooldowns.
@@ -514,20 +525,27 @@ export function gameLoop(
 
     presentIds.add(id)
 
+    const lm = player.landmarks
+
     // ── CHARGE: Peace sign hand detection ──
     let chargingInputActive = false
 
     // Step D: Guard against missing hands / pose landmarks
     // If a hand is visible but pose landmarks for that player are missing, ignore hand
-    const hasValidPose = Boolean(player.landmarks && player.landmarks.length >= 33)
+    const hasValidPose = Boolean(lm && lm.length >= 33)
     if (hasValidPose && latestHandResult?.landmarks && latestHandResult.landmarks.length > 0) {
       for (const hand of latestHandResult.landmarks) {
         if (!hand || hand.length < 21) continue
         const wrist = hand[0]
         if (!wrist) continue
-        // Wrist position: wrist.x < 0.5 -> P1, else P2
-        const handPlayerId: 1 | 2 = wrist.x < 0.5 ? 1 : 2
-        if (handPlayerId === id) {
+        // Wrist position: match by proximity to player's wrists, or fallback to screen half
+        const isThisPlayer =
+          store.mode === 'TRAINING'
+            ? id === 1
+            : ((lm[15] && Math.hypot(wrist.x - lm[15].x, wrist.y - lm[15].y) < 0.25) ||
+               (lm[16] && Math.hypot(wrist.x - lm[16].x, wrist.y - lm[16].y) < 0.25) ||
+               (wrist.x < 0.5 ? 1 : 2) === id)
+        if (isThisPlayer) {
           if (detectPeaceSign(hand)) {
             chargingInputActive = true
             break
@@ -548,7 +566,6 @@ export function gameLoop(
 
         if (!hasShownChargingText[id]) {
           hasShownChargingText[id] = true
-          const lm = player.landmarks
           const shoulder11 = lm[11]
           const shoulder12 = lm[12]
           const chestX =
@@ -589,20 +606,11 @@ export function gameLoop(
       lastStaminaUpdateAt === 0
         ? 16
         : Math.min(100, Math.max(0, now - lastStaminaUpdateAt))
-    const currentStamina = store.players[id - 1]?.stamina ?? 100
     const regenRate = isCharging ? 20 : 3
-    const newStamina = Math.min(100, currentStamina + (regenRate * dt) / 1000)
-    if (newStamina !== currentStamina) {
-      useGameStore.setState((state) => ({
-        players: state.players.map((p) =>
-          p.id === id ? { ...p, stamina: newStamina } : p
-        ) as [Player, Player],
-      }))
-    }
+    playerStamina[id] = Math.min(100, (playerStamina[id] ?? 100) + (regenRate * dt) / 1000)
 
     // Aura VFX (particles rising from chest)
     if (isCharging) {
-      const lm = player.landmarks
       const shoulder11 = lm[11]
       const shoulder12 = lm[12]
       const chestX =
@@ -638,7 +646,91 @@ export function gameLoop(
     }
 
     const tracker = gestureTrackers[id]
-    const detected = detectGesture(player.landmarks, id)
+
+    // STEP B & C: Shared armExtended helper for FIRE & PUNCH
+    const shoulder11 = lm[11]
+    const shoulder12 = lm[12]
+    const shoulderMidX = shoulder11 && shoulder12 ? (shoulder11.x + shoulder12.x) / 2 : 0.5
+    const shoulderMidY = shoulder11 && shoulder12 ? (shoulder11.y + shoulder12.y) / 2 : 0.4
+    let targetX = id === 1 ? 0.65 : 0.35
+    if (store.mode === 'TRAINING') {
+      targetX = store.dummy.anchorX
+    } else {
+      const oppId: 1 | 2 = id === 1 ? 2 : 1
+      const opp = players.find((p) => p.playerId === oppId)
+      if (opp && opp.landmarks && opp.landmarks[11] && opp.landmarks[12]) {
+        targetX = (opp.landmarks[11].x + opp.landmarks[12].x) / 2
+      }
+    }
+
+    const pointingRight = targetX > shoulderMidX
+
+    const inRange = (x: number, y: number) =>
+      (pointingRight ? x > shoulderMidX + 0.15 : x < shoulderMidX - 0.15) &&
+      y > shoulderMidY - 0.10 &&
+      y < shoulderMidY + 0.20
+
+    const leftExtended = Boolean(lm[15] && inRange(lm[15].x, lm[15].y))
+    const rightExtended = Boolean(lm[16] && inRange(lm[16].x, lm[16].y))
+    const armExtended = leftExtended || rightExtended
+
+    let fireHandIndex: 15 | 16 = 15
+    if (rightExtended && !leftExtended) {
+      fireHandIndex = 16
+    } else if (leftExtended && rightExtended && lm[15] && lm[16]) {
+      fireHandIndex = pointingRight
+        ? (lm[16].x >= lm[15].x ? 16 : 15)
+        : (lm[16].x <= lm[15].x ? 16 : 15)
+    }
+
+    // Check if HandLandmarker detects a hand for this player
+    let playerHand: NormalizedLandmark[] | LandmarkPoint[] | null = null
+    let hasHandForPlayer = false
+    let isFist = false
+    let isFingerGun = false
+
+    if (hasValidPose && latestHandResult?.landmarks && latestHandResult.landmarks.length > 0) {
+      for (const hand of latestHandResult.landmarks) {
+        if (!hand || hand.length < 21) continue
+        const wrist = hand[0]
+        if (!wrist) continue
+
+        const isThisPlayerHand =
+          store.mode === 'TRAINING'
+            ? id === 1
+            : (wrist.x < 0.5 ? 1 : 2) === id ||
+              (lm[15] && Math.hypot(wrist.x - lm[15].x, wrist.y - lm[15].y) < 0.25) ||
+              (lm[16] && Math.hypot(wrist.x - lm[16].x, wrist.y - lm[16].y) < 0.25)
+
+        if (isThisPlayerHand) {
+          hasHandForPlayer = true
+          playerHand = hand
+          if (detectFingerGun(hand)) {
+            isFingerGun = true
+          }
+          if (detectFist(hand)) {
+            isFist = true
+          }
+        }
+      }
+    }
+
+    // Priority: BLOCK > HEAL > FIRE > PUNCH > CHARGE
+    let detected = detectGesture(player.landmarks, id, playerHand, targetX)
+
+    if (!detected || (detected.move !== 'BLOCK' && detected.move !== 'HEAL')) {
+      if (hasValidPose && hasHandForPlayer && armExtended) {
+        if (isFingerGun) {
+          detected = { move: 'FIRE', handIndex: fireHandIndex }
+        } else if (isFist) {
+          detected = { move: 'PUNCH' }
+        } else {
+          detected = null
+        }
+      } else {
+        detected = null
+      }
+    }
 
     const gestureChanged =
       detected?.move !== tracker.activeGesture ||
@@ -671,7 +763,7 @@ export function gameLoop(
       ) {
         const moveId = detected.move
         const move = MOVES[moveId]
-        const currentStamina = storePlayer?.stamina ?? 100
+        const currentStamina = playerStamina[id] ?? (storePlayer?.stamina ?? 100)
 
         // Stamina check: fails silently + shows "NO STAMINA" floating text if stamina < move.staminaCost
         if (currentStamina < move.staminaCost) {
@@ -704,10 +796,10 @@ export function gameLoop(
         }
 
         // Deduct stamina cost BEFORE projectile spawns
-        const newPlayerStamina = Math.max(0, currentStamina - move.staminaCost)
+        playerStamina[id] = Math.max(0, currentStamina - move.staminaCost)
         useGameStore.setState((state) => ({
           players: state.players.map((p) =>
-            p.id === id ? { ...p, stamina: newPlayerStamina } : p
+            p.id === id ? { ...p, stamina: playerStamina[id] } : p
           ) as [Player, Player],
         }))
 
@@ -730,7 +822,6 @@ export function gameLoop(
           lastGesture: { ...state.lastGesture, [id]: moveName },
         }))
 
-        const lm = player.landmarks
         const shoulder11 = lm[11]
         const shoulder12 = lm[12]
         const chestX = shoulder11 && shoulder12 ? (shoulder11.x + shoulder12.x) / 2 : 0.5
@@ -852,6 +943,24 @@ export function gameLoop(
 
   lastStaminaUpdateAt = now
 
+  // Throttle periodic stamina regeneration updates to Zustand to 100ms
+  if (now - lastStaminaStoreFlushAt >= 100) {
+    lastStaminaStoreFlushAt = now
+    const storeP1 = store.players[0]?.stamina ?? 100
+    const storeP2 = store.players[1]?.stamina ?? 100
+    if (
+      Math.abs(playerStamina[1] - storeP1) >= 0.5 ||
+      Math.abs(playerStamina[2] - storeP2) >= 0.5
+    ) {
+      useGameStore.setState((state) => ({
+        players: state.players.map((p) => ({
+          ...p,
+          stamina: Math.round(playerStamina[p.id] * 10) / 10,
+        })) as [Player, Player],
+      }))
+    }
+  }
+
   // Reset tracking if an assigned player is absent
   for (const id of [1, 2] as const) {
     if (!presentIds.has(id)) {
@@ -869,10 +978,6 @@ export function gameLoop(
   }
   } finally {
     window.__lastFrameMs = performance.now() - frameStart
-    measurementFrameCount++
-    if (measurementFrameCount % 120 === 0) {
-      console.log('frame time:', window.__lastFrameMs.toFixed(1), 'ms')
-    }
   }
 }
 

@@ -1,8 +1,31 @@
-import { PoseLandmarker } from '@mediapipe/tasks-vision'
-import { useGameStore } from '../game/state'
+import { PoseLandmarker, type NormalizedLandmark } from '@mediapipe/tasks-vision'
+import { useGameStore, registerResetCallback } from '../game/state'
 import type { MoveId, FloatingTextItem, Particle, ConfettiPiece } from '../game/state'
 import type { PlayerAssignment } from '../hooks/usePlayerAssignment'
 import type { Projectile, LastFireInfo } from '../game/loop'
+
+export interface GoodLandmarksEntry {
+  landmarks: NormalizedLandmark[]
+  timestamp: number
+  hipMidX: number
+  shoulderMid: { x: number; y: number }
+}
+
+export const lastGoodLandmarks: Record<1 | 2, GoodLandmarksEntry | null> = {
+  1: null,
+  2: null,
+}
+
+export function resetLastGoodLandmarks(): void {
+  lastGoodLandmarks[1] = null
+  lastGoodLandmarks[2] = null
+}
+
+registerResetCallback(() => {
+  resetLastGoodLandmarks()
+  resetSmoothedBarPos()
+  resetDisplayBars()
+})
 
 interface SmoothedPos {
   x: number
@@ -154,7 +177,51 @@ export function renderCanvas({
 }: RenderCanvasOptions): void {
   const canvas = ctx.canvas
   ctx.setTransform(1, 0, 0, 1, 0, 0)
-  if (!players || !players.some(p => p.landmarks && p.landmarks.length >= 33)) {
+
+  // Update lastGoodLandmarks ref when fresh landmarks arrive
+  if (players) {
+    for (let pi = 0; pi < players.length; pi++) {
+      const p = players[pi]
+      if (p && p.landmarks && p.landmarks.length >= 33 && !p.isStale) {
+        lastGoodLandmarks[p.playerId] = {
+          landmarks: p.landmarks,
+          timestamp: now,
+          hipMidX: p.hipMidX,
+          shoulderMid: p.shoulderMid,
+        }
+      }
+    }
+  }
+
+  interface PlayerToDraw {
+    playerId: 1 | 2
+    landmarks: NormalizedLandmark[]
+    isStale: boolean
+  }
+
+  const playersToDraw: PlayerToDraw[] = []
+
+  for (const id of PLAYER_IDS) {
+    const playerInList = players?.find((p) => p.playerId === id && p.landmarks && p.landmarks.length >= 33)
+    if (playerInList && !playerInList.isStale) {
+      playersToDraw.push({
+        playerId: id,
+        landmarks: playerInList.landmarks,
+        isStale: false,
+      })
+    } else {
+      const good = lastGoodLandmarks[id]
+      if (good && now - good.timestamp < 1000) {
+        playersToDraw.push({
+          playerId: id,
+          landmarks: good.landmarks,
+          isStale: true,
+        })
+      }
+    }
+  }
+
+  if (playersToDraw.length === 0) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     return
   }
@@ -189,19 +256,21 @@ export function renderCanvas({
   ctx.setLineDash(DASH_EMPTY)
 
   // ──────────────────────────────────────────
-  // 1. Skeleton (faint white)
+  // 1. Skeleton (faint white, 70% opacity if stale)
   // ──────────────────────────────────────────
   const connections = PoseLandmarker.POSE_CONNECTIONS
   const hitFlashUntil = useGameStore.getState().hitFlashUntil
   const hitFlash1 = hitFlashUntil?.[1] ?? 0
   const hitFlash2 = hitFlashUntil?.[2] ?? 0
 
-  for (let pi = 0; pi < players.length; pi++) {
-    const player = players[pi]
-    if (!player || !player.landmarks || player.landmarks.length < 33) continue
-    const id = player.playerId
-    const lm = player.landmarks
+  for (let pi = 0; pi < playersToDraw.length; pi++) {
+    const { playerId: id, landmarks: lm, isStale } = playersToDraw[pi]
     const fireInfo = lastFireAt[id]
+
+    ctx.save()
+    if (isStale) {
+      ctx.globalAlpha = 0.7
+    }
 
     // STEP B: Punch dash - lunge forward +0.04 normalized x for 120ms, easing back during 0-150ms
     let dashOffsetX = 0
@@ -248,6 +317,8 @@ export function renderCanvas({
       ctx.arc((landmark.x + dashOffsetX) * vw, landmark.y * vh, 2.5, 0, Math.PI * 2)
       ctx.fill()
     }
+
+    ctx.restore()
   }
 
   // ──────────────────────────────────────────
@@ -257,16 +328,12 @@ export function renderCanvas({
   const barWidth = 0.18 * canvas.width
   const barHeight = 10
 
-  for (let pi = 0; pi < players.length; pi++) {
-    const player = players[pi]
-    if (!player || !player.landmarks || player.landmarks.length < 33) continue
-    const lm = player.landmarks
-    if (!lm) continue
+  for (let pi = 0; pi < playersToDraw.length; pi++) {
+    const { playerId: id, landmarks: lm } = playersToDraw[pi]
     const lm11 = lm[11]
     const lm12 = lm[12]
     if (!lm11 || !lm12) continue
 
-    const id = player.playerId
     const anchorX = (lm11.x + lm12.x) * 0.5
     const anchorY = (lm11.y + lm12.y) * 0.5
 
